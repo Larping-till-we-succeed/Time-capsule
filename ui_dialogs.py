@@ -130,7 +130,7 @@ class NewSnapshotDialog(BaseDialog):
         )
 
     def values(self):
-        return self.title.text().strip(), self.note.text()
+        return self.title.text().strip(), self.note.toPlainText()
 
 
 class RestoreDialog(BaseDialog):

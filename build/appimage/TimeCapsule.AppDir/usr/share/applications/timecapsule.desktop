@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=TimeCapsule
+GenericName=Project snapshot tool
+Comment=A time machine for project folders
+Exec=TimeCapsule
+Icon=timecapsule
+Categories=Utility;Development;
+Terminal=false
+StartupWMClass=TimeCapsule
