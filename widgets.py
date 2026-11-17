@@ -1,5 +1,7 @@
 """Reusable interface pieces: cards, pills, the history chart and empty states."""
 
+import time
+
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
@@ -123,6 +125,119 @@ class BarChart(QWidget):
                 p.drawText(QRectF(rect.x(), rect.y(), rect.width(), 14), Qt.AlignCenter, str(value))
             p.setPen(QColor(DIM if i % 2 else MUTED))
             p.drawText(QRectF(cx - step / 2, bottom + 6, step, 14), Qt.AlignCenter, name)
+
+
+class ProjectTimeline(QWidget):
+    """A single horizontal rail showing every moment in a project's life."""
+
+    selected = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.snaps = []
+        self.start = None
+        self.end = None
+        self.selected_id = None
+        self.start_label = ""
+        self.end_label = ""
+        self.setFixedHeight(76)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    # ------------------------------------------------------------------ data
+    def set_data(self, snaps, start=None, end=None, selected=None, start_label="", end_label=""):
+        self.snaps = list(snaps)
+        self.start = start
+        self.end = end
+        self.start_label = start_label
+        self.end_label = end_label
+        if selected is not None:
+            self.selected_id = selected
+        self.update()
+
+    def set_selected(self, sid):
+        if self.selected_id != sid:
+            self.selected_id = sid
+            self.update()
+
+    def _axis(self):
+        left, right = 16.0, max(17.0, self.width() - 16.0)
+        if self.start is not None:
+            t0 = float(self.start)
+        else:
+            t0 = float(self.snaps[0]["ts"]) if self.snaps else 0.0
+        if self.end is not None:
+            t1 = float(self.end)
+        else:
+            t1 = float(self.snaps[-1]["ts"]) if self.snaps else t0 + 1.0
+        if t1 <= t0:
+            t1 = t0 + 1.0
+        return left, right, t0, t1
+
+    def _x(self, ts):
+        left, right, t0, t1 = self._axis()
+        frac = (float(ts) - t0) / (t1 - t0)
+        return left + (right - left) * max(0.0, min(1.0, frac))
+
+    def _dot_at(self, px):
+        best = None
+        for s in self.snaps:
+            gap = abs(self._x(s["ts"]) - px)
+            if gap <= 14 and (best is None or gap < best[0]):
+                best = (gap, s)
+        return best[1] if best else None
+
+    # -------------------------------------------------------------- painting
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        left, right, _t0, _t1 = self._axis()
+        y = 34.0
+        f = QFont()
+        f.setPixelSize(10)
+        p.setFont(f)
+        if not self.snaps:
+            p.setPen(QColor(MUTED))
+            p.drawText(self.rect(), Qt.AlignCenter, "Every capture you make lands on this line")
+            return
+        p.setPen(QPen(QColor("#23262e"), 2))
+        p.drawLine(int(left), int(y), int(right), int(y))
+        p.setPen(QPen(QColor("#2f343e"), 1))
+        for frac in (0.0, 0.5, 1.0):
+            x = left + (right - left) * frac
+            p.drawLine(int(x), int(y - 5), int(x), int(y + 5))
+        radius = 4.5 if len(self.snaps) <= 40 else 3.5
+        for s in self.snaps:
+            x = self._x(s["ts"])
+            active = s["id"] == self.selected_id
+            color = "#454b57" if s.get("kind") == "auto" else "#8b929e"
+            if active:
+                color = ACCENT
+            paint_dot(p, x, y, radius + (1.2 if active else 0), color, glow=active)
+        p.setPen(QColor(DIM))
+        if self.start_label:
+            p.drawText(QRectF(left, y + 16, 170, 14), Qt.AlignLeft | Qt.AlignVCenter, self.start_label)
+        if self.end_label:
+            p.drawText(QRectF(right - 170, y + 16, 170, 14), Qt.AlignRight | Qt.AlignVCenter, self.end_label)
+
+    # ----------------------------------------------------------- interaction
+    def mouseMoveEvent(self, e):
+        s = self._dot_at(e.position().x())
+        if s is None:
+            self.setToolTip("")
+        else:
+            kind = "Auto-save" if s.get("kind") == "auto" else "Snapshot"
+            stamp = time.strftime("%d %b %Y · %H:%M", time.localtime(s["ts"]))
+            self.setToolTip(f"{kind} · {stamp}")
+        super().mouseMoveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            s = self._dot_at(e.position().x())
+            if s is not None:
+                self.selected.emit(s["id"])
+        super().mousePressEvent(e)
 
 
 class MiniBar(QWidget):

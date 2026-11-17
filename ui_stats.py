@@ -22,7 +22,7 @@ class StatsView(QWidget):
         self.c_snaps = StatCard("snapshots", "0", "🕰", ACCENT)
         self.c_files = StatCard("tracked files", "0", "▤", "#7dd3fc")
         self.c_size = StatCard("project size", "0 B", "◈", GREEN)
-        self.c_store = StatCard("capsule storage", "0 B", "❖", "#c4b5fd")
+        self.c_store = StatCard("project storage", "0 B", "❖", "#c4b5fd")
         for c in (self.c_snaps, self.c_files, self.c_size, self.c_store):
             cards.addWidget(c)
         root.addLayout(cards)
@@ -70,7 +70,7 @@ class StatsView(QWidget):
         rl = QVBoxLayout(right)
         rl.setContentsMargins(18, 14, 18, 14)
         rl.setSpacing(10)
-        rt = QLabel("Capsule facts")
+        rt = QLabel("Project facts")
         rt.setStyleSheet("font-size:15px;font-weight:800")
         rl.addWidget(rt)
         holder = QWidget()

@@ -28,7 +28,13 @@ IGNORE_EXT = {".pyc", ".pyo", ".pyd", ".o", ".obj", ".class", ".so", ".dylib", "
               ".lib", ".exe", ".swp", ".swo", ".tmp", ".part"}
 MAX_FILE = 2 * 1024 * 1024
 MAX_FILES = 20000
-DEFAULT_SETTINGS = {"max_file": MAX_FILE, "extra_ignore": ""}
+DEFAULT_SETTINGS = {
+    "max_file": MAX_FILE,
+    "extra_ignore": "",
+    "auto_save": False,
+    "auto_save_minutes": 30,
+    "auto_save_only_changes": True,
+}
 
 
 class StoreError(Exception):
@@ -69,6 +75,20 @@ def settings():
 
 def save_settings(data):
     _write_json(SETTINGS_FILE, {k: data[k] for k in DEFAULT_SETTINGS if k in data})
+
+
+def autosave_config():
+    """Normalised auto-save settings: enabled, interval in minutes, skip unchanged."""
+    cfg = settings()
+    try:
+        minutes = int(cfg.get("auto_save_minutes") or 30)
+    except (TypeError, ValueError):
+        minutes = 30
+    return {
+        "enabled": bool(cfg.get("auto_save")),
+        "minutes": max(1, min(1440, minutes)),
+        "only_changes": bool(cfg.get("auto_save_only_changes", True)),
+    }
 
 
 # --------------------------------------------------------------------- projects
@@ -227,7 +247,7 @@ def previous_snapshot(pid, sid):
     return None
 
 
-def take_snapshot(pid, note="", title=""):
+def take_snapshot(pid, note="", title="", kind="manual"):
     files, total = _collect(pid)
     if not files:
         raise StoreError("Nothing to capture: no trackable files were found.")
@@ -236,6 +256,7 @@ def take_snapshot(pid, note="", title=""):
         "ts": time.time(),
         "note": note.strip(),
         "title": title.strip(),
+        "kind": kind,
         "files": files,
         "count": len(files),
         "bytes": total,
@@ -262,6 +283,18 @@ def update_snapshot(pid, sid, note=None, title=None):
 def delete_snapshot(pid, sid):
     snaps = [s for s in load_snapshots(pid) if s["id"] != sid]
     save_snapshots(pid, snaps)
+
+
+def has_changes(pid):
+    """True when the folder differs from the newest snapshot (used by auto-save)."""
+    snaps = load_snapshots(pid)
+    if not snaps:
+        return True
+    try:
+        current, _total = _collect(pid, store_objects=False)
+    except StoreError:
+        return False
+    return current != snaps[-1]["files"]
 
 
 # ------------------------------------------------------------------------- blobs

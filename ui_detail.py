@@ -187,6 +187,8 @@ class SnapshotDetail(QWidget):
         base = prev or {"files": {}}
         diff = store.compare(base, snap)
         c = diff["counts"]
+        if snap.get("kind") == "auto":
+            self.chips.addWidget(chip("auto-save", MUTED))
         for kind in ("modified", "added", "deleted"):
             if c[kind]:
                 color = {"modified": ACCENT, "added": GREEN, "deleted": RED}[kind]
@@ -199,11 +201,13 @@ class SnapshotDetail(QWidget):
             self.chips.addWidget(chip("vs previous", MUTED))
         self.chips.addStretch(1)
 
+        self.note.setEnabled(True)
+        self.note.setPlaceholderText("What happened at this moment? Why did you save it?")
         self.note.blockSignals(True)
         self.note.setPlainText(snap.get("note", ""))
         self.note.blockSignals(False)
-        self.save.setEnabled(False)
         self.note_state.setText("")
+        self.save.setEnabled(False)
         self.cmp.setEnabled(prev is not None)
         self._rebuild_rows()
 

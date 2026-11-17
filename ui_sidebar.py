@@ -101,8 +101,21 @@ class Sidebar(QWidget):
             b.clicked.connect(lambda _=False, k=key: self.set_view(k, emit=True))
             self.navbtns[key] = b
             nav.addWidget(b)
+        settings = QPushButton("⚙   Settings")
+        settings.setObjectName("nav")
+        settings.setCursor(Qt.PointingHandCursor)
+        settings.setCheckable(True)
+        settings.setProperty("active", "false")
+        settings.clicked.connect(lambda _=False: self.set_view("settings", emit=True))
+        self.navbtns["settings"] = settings
+        nav.addWidget(settings)
         root.addLayout(nav)
         root.addStretch(1)
+
+        self.autosave = QLabel("")
+        self.autosave.setObjectName("sub")
+        self.autosave.setWordWrap(True)
+        root.addWidget(self.autosave)
 
         self.storage = QLabel("")
         self.storage.setObjectName("sub")
@@ -123,6 +136,15 @@ class Sidebar(QWidget):
             b.style().polish(b)
         if emit:
             self.view_changed.emit(key)
+
+    def set_autosave(self, cfg, last=None):
+        if not cfg.get("enabled"):
+            self.autosave.setText("Auto-save off · set it up in Settings")
+        else:
+            text = f"Auto-save every {cfg['minutes']} min"
+            if last:
+                text += f" · last {store.fmt_time(last)}"
+            self.autosave.setText(text)
 
     def reload(self, projects, current_pid, totals):
         while self.pcol.count():

@@ -1,5 +1,7 @@
 """Timeline page: a day-grouped rail of snapshots next to the detail panel."""
 
+import time
+
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -9,7 +11,7 @@ from PySide6.QtWidgets import (
 import store
 from theme import ACCENT, BORDER, DIM, GREEN, MUTED, RED, TEXT, chip, hbox, label, vbox
 from ui_detail import SnapshotDetail
-from widgets import ClickFrame, EmptyState
+from widgets import ClickFrame, EmptyState, ProjectTimeline
 
 
 class SnapshotRow(QFrame):
@@ -124,9 +126,33 @@ class TimelineView(QWidget):
         self.snaps = []
         self.rows = {}
         self.selected = None
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(20)
+        root.setSpacing(14)
+
+        rail = QFrame()
+        rail.setObjectName("card")
+        rl = QVBoxLayout(rail)
+        rl.setContentsMargins(18, 12, 18, 8)
+        rl.setSpacing(4)
+        rhead = hbox(spacing=10)
+        rcap = QLabel("PROJECT TIMELINE")
+        rcap.setObjectName("tiny")
+        self.rail_span = QLabel("")
+        self.rail_span.setObjectName("sub")
+        rhead.addWidget(rcap)
+        rhead.addWidget(self.rail_span)
+        rhead.addStretch(1)
+        rhead.addWidget(chip("● manual snapshot", "#8b929e"))
+        rhead.addWidget(chip("● auto-save", "#454b57"))
+        rl.addLayout(rhead)
+        self.rail = ProjectTimeline()
+        self.rail.selected.connect(self.select)
+        rl.addWidget(self.rail)
+        root.addWidget(rail)
+
+        cols = QHBoxLayout()
+        cols.setSpacing(20)
 
         left = QVBoxLayout()
         left.setSpacing(10)
@@ -155,7 +181,7 @@ class TimelineView(QWidget):
         leftwrap = QWidget()
         leftwrap.setLayout(left)
         leftwrap.setFixedWidth(430)
-        root.addWidget(leftwrap)
+        cols.addWidget(leftwrap)
 
         self.detail = SnapshotDetail()
         self.detail.restore_all.connect(self.restore_all.emit)
@@ -163,7 +189,8 @@ class TimelineView(QWidget):
         self.detail.compare_previous.connect(self._compare_prev)
         self.detail.note_saved.connect(lambda _sid: self.note_saved.emit())
         self.detail.delete_requested.connect(self.delete_requested.emit)
-        root.addWidget(self.detail, 1)
+        cols.addWidget(self.detail, 1)
+        root.addLayout(cols, 1)
 
     def _compare_prev(self, sid):
         prev = store.previous_snapshot(self.pid, sid)
@@ -175,7 +202,25 @@ class TimelineView(QWidget):
         self.snaps = store.load_snapshots(pid) if pid else []
         self.rebuild(select)
 
+    def _load_rail(self):
+        """Fill the project-wide timeline rail above the day-grouped list."""
+        if not self.snaps:
+            self.rail.set_data([], selected=self.selected)
+            self.rail_span.setText("nothing captured yet")
+            return
+        proj = store.get_project(self.pid) if self.pid else None
+        start = min((proj or {}).get("created") or self.snaps[0]["ts"], self.snaps[0]["ts"])
+        end = max(time.time(), self.snaps[-1]["ts"])
+        if len(self.snaps) > 1:
+            span = (self.snaps[-1]["ts"] - self.snaps[0]["ts"]) / 86400
+            self.rail_span.setText(f"{len(self.snaps)} moments · {span:.1f} days of history")
+        else:
+            self.rail_span.setText("1 moment")
+        self.rail.set_data(self.snaps, start, end, self.selected,
+                          store.fmt_date(start), "today")
+
     def rebuild(self, select=None):
+        self._load_rail()
         while self.lcol.count():
             item = self.lcol.takeAt(0)
             w = item.widget()
@@ -201,8 +246,9 @@ class TimelineView(QWidget):
         query = self.search.text().strip().lower()
         snaps = list(reversed(self.snaps))
         if query:
-            snaps = [s for s in snaps if query in s.get("note", "").lower()
-                     or query in s.get("title", "").lower()
+            snaps = [s for s in snaps
+                     if query in s.get("title", "").lower()
+                     or query in s.get("note", "").lower()
                      or any(query in p.lower() for p in s["files"])]
         self.count.setText(f"{len(snaps)} of {len(self.snaps)}" if query else f"{len(self.snaps)} snapshots")
         order = {s["id"]: s for s in self.snaps}
@@ -242,6 +288,7 @@ class TimelineView(QWidget):
         for key, row in self.rows.items():
             row.set_selected(key == sid)
         self.selected = sid
+        self.rail.set_selected(sid)
         snap = next((s for s in self.snaps if s["id"] == sid), None)
         prev = store.previous_snapshot(self.pid, sid)
         if snap:

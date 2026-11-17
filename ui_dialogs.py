@@ -1,4 +1,4 @@
-"""Dialogs: add a project, describe a snapshot, confirm a restore."""
+"""Dialogs: create a project, describe a snapshot, confirm restores."""
 
 import os
 
@@ -9,16 +9,16 @@ from PySide6.QtWidgets import (
 )
 
 import store
-from theme import ACCENT, BORDER, DIM, GREEN, MUTED, RED, TEXT, hbox, hline, label, vbox
+from theme import RED, hbox, label
 from widgets import StatusPill
 
 
 class BaseDialog(QDialog):
-    def __init__(self, parent=None, title="", width=520):
+    def __init__(self, parent=None, title="", width=520, modal=True):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setMinimumWidth(width)
-        self.setModal(True)
+        self.setModal(modal)
         self.root = QVBoxLayout(self)
         self.root.setContentsMargins(22, 20, 22, 18)
         self.root.setSpacing(14)
@@ -58,43 +58,69 @@ def _field(caption, widget):
     return box
 
 
-class AddProjectDialog(BaseDialog):
+class NewProjectDialog(BaseDialog):
+    """Create a project: a name plus the folder TimeCapsule should watch."""
+
     def __init__(self, parent=None):
-        super().__init__(parent, "Add a project", 560)
+        super().__init__(parent, "New project", 580)
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("e.g. The importer rewrite")
         self.path = QLineEdit()
         self.path.setPlaceholderText("/home/you/projects/my-app")
-        self.name = QLineEdit()
-        self.name.setPlaceholderText("Optional display name")
+        self.path.textChanged.connect(self._suggest_name)
         browse = QPushButton("Browse…")
         browse.setObjectName("ghost")
         browse.setCursor(Qt.PointingHandCursor)
         browse.clicked.connect(self.pick)
         prow = hbox(self.path, browse, spacing=8)
-        self.root.addLayout(_field("FOLDER TO WATCH", prow))
+
+        self.create = QCheckBox("Create the folder if it does not exist yet")
+        self.create.setChecked(True)
+
         self.root.addLayout(_field("NAME", self.name))
-        self.hint = QLabel("TimeCapsule copies file contents into its own store, so snapshots "
-                           "survive even if you edit the folder later. Caches, build output and "
-                           "files over 2 MB are skipped.")
+        self.root.addLayout(_field("PROJECT FOLDER", prow))
+        self.root.addWidget(self.create)
+        self.hint = QLabel(
+            "A project is a folder TimeCapsule keeps an eye on. File contents are copied into its "
+            "own store, so snapshots survive later edits. Caches, build output and files over 2 MB "
+            "are skipped."
+        )
         self.hint.setObjectName("sub")
         self.hint.setWordWrap(True)
         self.root.addWidget(self.hint)
-        self.finish("Add project")
+        self.finish("Create project")
+
+    def _suggest_name(self, text):
+        if self.name.text().strip():
+            return
+        base = os.path.basename(text.rstrip("/"))
+        if base:
+            self.name.setText(base)
 
     def pick(self):
         path = QFileDialog.getExistingDirectory(self, "Choose a project folder", os.path.expanduser("~"))
         if path:
             self.path.setText(path)
 
+    def folder(self):
+        return os.path.abspath(os.path.expanduser(self.path.text().strip()))
+
     def accept(self):
-        path = self.path.text().strip()
-        if not path or not os.path.isdir(os.path.expanduser(path)):
-            self.hint.setText("Pick an existing folder first.")
-            self.hint.setStyleSheet(f"color:{RED}")
-            return
+        if not self.path.text().strip():
+            return self._fail("Choose a folder for this project first.")
+        folder = self.folder()
+        if os.path.exists(folder) and not os.path.isdir(folder):
+            return self._fail("That path is a file, not a folder.")
+        if not os.path.isdir(folder) and not self.create.isChecked():
+            return self._fail("That folder does not exist — tick the box to create it, or browse elsewhere.")
         super().accept()
 
+    def _fail(self, text):
+        self.hint.setText(text)
+        self.hint.setStyleSheet(f"color:{RED}")
+
     def values(self):
-        return self.path.text().strip(), self.name.text().strip()
+        return self.folder(), self.name.text().strip(), self.create.isChecked()
 
 
 class NewSnapshotDialog(BaseDialog):
@@ -126,7 +152,7 @@ class NewSnapshotDialog(BaseDialog):
         total = sum(size for _rel, _ap, size in files)
         self.preview.setText(
             f"{len(files)} tracked files · {store.fmt_bytes(total)} will be captured. "
-            "Existing content is reused from the capsule store, so repeated snapshots stay small."
+            "Existing content is reused from the project store, so repeated snapshots stay small."
         )
 
     def values(self):
