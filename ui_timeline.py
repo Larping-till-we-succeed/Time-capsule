@@ -5,7 +5,8 @@ import time
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
+    QVBoxLayout, QWidget,
 )
 
 import store
@@ -17,7 +18,7 @@ from widgets import ClickFrame, EmptyState, ProjectTimeline
 class SnapshotRow(QFrame):
     clicked = Signal(str)
 
-    def __init__(self, snap, prev, selected=False, parent=None):
+    def __init__(self, snap, prev, selected=False, branches=None, parent=None):
         super().__init__(parent)
         self.sid = snap["id"]
         self.snap = snap
@@ -58,6 +59,10 @@ class SnapshotRow(QFrame):
                     meta.addWidget(c)
         else:
             meta.addWidget(chip("first snapshot", MUTED))
+        for name in (branches or []):
+            c = chip(f"⑃ {name}", "#c4b5fd")
+            c.setToolTip(f"The branch “{name}” starts from this moment")
+            meta.addWidget(c)
         meta.addStretch(1)
         size = QLabel(store.fmt_bytes(snap["bytes"]))
         size.setStyleSheet(f"color:{DIM};font-size:11px")
@@ -119,6 +124,8 @@ class TimelineView(QWidget):
     compare_requested = Signal(str, str)
     note_saved = Signal()
     delete_requested = Signal(str)
+    branch_selected = Signal(str)
+    new_branch = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -126,6 +133,7 @@ class TimelineView(QWidget):
         self.snaps = []
         self.rows = {}
         self.selected = None
+        self.branch_id = "main"
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(14)
@@ -146,6 +154,24 @@ class TimelineView(QWidget):
         rhead.addWidget(chip("● manual snapshot", "#8b929e"))
         rhead.addWidget(chip("● auto-save", "#454b57"))
         rl.addLayout(rhead)
+
+        brow = hbox(spacing=8)
+        bcap = QLabel("BRANCH")
+        bcap.setObjectName("tiny")
+        self.branch_box = QComboBox()
+        self.branch_box.setMinimumWidth(200)
+        self.branch_box.setCursor(Qt.PointingHandCursor)
+        self.branch_box.currentIndexChanged.connect(self._branch_pick)
+        newb = QPushButton("⑃   New branch")
+        newb.setObjectName("ghost")
+        newb.setCursor(Qt.PointingHandCursor)
+        newb.setToolTip("Start a new branch at the selected moment")
+        newb.clicked.connect(lambda: self.new_branch.emit(self.selected or ""))
+        brow.addWidget(bcap)
+        brow.addWidget(self.branch_box)
+        brow.addStretch(1)
+        brow.addWidget(newb)
+        rl.addLayout(brow)
         self.rail = ProjectTimeline()
         self.rail.selected.connect(self.select)
         rl.addWidget(self.rail)
@@ -197,27 +223,72 @@ class TimelineView(QWidget):
         if prev:
             self.compare_requested.emit(prev["id"], sid)
 
-    def load(self, pid, select=None):
+    def load(self, pid, select=None, branch=None):
         self.pid = pid
-        self.snaps = store.load_snapshots(pid) if pid else []
+        self.branch_id = branch or (store.active_branch(pid) if pid else "main")
+        self.snaps = store.branch_chain(pid, self.branch_id) if pid else []
+        self._load_branches()
         self.rebuild(select)
 
+    def _branch_pick(self, index):
+        bid = self.branch_box.itemData(index)
+        if bid and bid != self.branch_id:
+            self.branch_selected.emit(bid)
+
+    def _load_branches(self):
+        self.branch_box.blockSignals(True)
+        self.branch_box.clear()
+        if self.pid:
+            branches = store.load_branches(self.pid)
+            counts = {}
+            for s in store.load_snapshots(self.pid):
+                key = s.get("branch") or "main"
+                counts[key] = counts.get(key, 0) + 1
+            for b in branches:
+                n = counts.get(b["id"], 0)
+                self.branch_box.addItem(
+                    f"{b['name']}  ·  {n} snapshot{'s' if n != 1 else ''}", b["id"])
+                tip = ("branched from an earlier moment" if b.get("base")
+                       else "the project's first history")
+                self.branch_box.setItemData(self.branch_box.count() - 1, tip, Qt.ToolTipRole)
+            index = self.branch_box.findData(self.branch_id)
+            self.branch_box.setCurrentIndex(index if index >= 0 else 0)
+        self.branch_box.blockSignals(False)
+
+    def _branch_points(self):
+        points = {}
+        if not self.pid:
+            return points
+        for b in store.load_branches(self.pid):
+            base = b.get("base")
+            if base:
+                points.setdefault(base, []).append(b["name"])
+        return points
+
     def _load_rail(self):
-        """Fill the project-wide timeline rail above the day-grouped list."""
-        if not self.snaps:
-            self.rail.set_data([], selected=self.selected)
+        """Fill the branched timeline rail above the day-grouped list."""
+        if not self.pid:
+            self.rail.set_graph([], [])
+            self.rail_span.setText("")
+            return
+        proj = store.get_project(self.pid)
+        all_snaps = store.load_snapshots(self.pid)
+        branches = store.load_branches(self.pid)
+        if not all_snaps:
+            self.rail.set_graph([], branches, self.branch_id)
             self.rail_span.setText("nothing captured yet")
             return
-        proj = store.get_project(self.pid) if self.pid else None
-        start = min((proj or {}).get("created") or self.snaps[0]["ts"], self.snaps[0]["ts"])
-        end = max(time.time(), self.snaps[-1]["ts"])
+        start = min((proj or {}).get("created") or all_snaps[0]["ts"], all_snaps[0]["ts"])
+        end = max(time.time(), all_snaps[-1]["ts"])
         if len(self.snaps) > 1:
             span = (self.snaps[-1]["ts"] - self.snaps[0]["ts"]) / 86400
-            self.rail_span.setText(f"{len(self.snaps)} moments · {span:.1f} days of history")
+            self.rail_span.setText(
+                f"{len(self.snaps)} moments · {span:.1f} days · {len(branches)} branches"
+                if len(branches) > 1 else f"{len(self.snaps)} moments · {span:.1f} days of history")
         else:
-            self.rail_span.setText("1 moment")
-        self.rail.set_data(self.snaps, start, end, self.selected,
-                          store.fmt_date(start), "today")
+            self.rail_span.setText("1 moment" if len(branches) == 1 else "1 moment on this branch")
+        self.rail.set_graph(all_snaps, branches, self.branch_id, start, end, self.selected,
+                            store.fmt_date(start), "today")
 
     def rebuild(self, select=None):
         self._load_rail()
@@ -251,7 +322,7 @@ class TimelineView(QWidget):
                      or query in s.get("note", "").lower()
                      or any(query in p.lower() for p in s["files"])]
         self.count.setText(f"{len(snaps)} of {len(self.snaps)}" if query else f"{len(self.snaps)} snapshots")
-        order = {s["id"]: s for s in self.snaps}
+        points = self._branch_points()
         last_day = None
         prev_by_id = {}
         for idx, s in enumerate(self.snaps):
@@ -264,7 +335,8 @@ class TimelineView(QWidget):
                 head.setStyleSheet("padding:14px 0 6px 46px;color:#6f7683")
                 self.lcol.addWidget(head)
                 last_day = day
-            row = SnapshotRow(s, prev_by_id.get(s["id"]), s["id"] == self.selected)
+            row = SnapshotRow(s, prev_by_id.get(s["id"]), s["id"] == self.selected,
+                              points.get(s["id"]))
             row.clicked.connect(self.select)
             self.lcol.addWidget(row)
             self.rows[s["id"]] = row

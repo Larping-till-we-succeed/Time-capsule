@@ -155,6 +155,10 @@ def snapshots_file(pid):
     return os.path.join(project_dir(pid), "snapshots.json")
 
 
+def branches_file(pid):
+    return os.path.join(project_dir(pid), "branches.json")
+
+
 # --------------------------------------------------------------------- scanning
 
 def _ignored(name, extra):
@@ -237,26 +241,31 @@ def get_snapshot(pid, sid):
     return None
 
 
-def previous_snapshot(pid, sid):
-    snaps = load_snapshots(pid)
-    prev = None
-    for s in snaps:
-        if s["id"] == sid:
-            return prev
-        prev = s
-    return None
+def previous_snapshot(pid, sid, branch=None):
+    snap = get_snapshot(pid, sid)
+    if snap is None:
+        return None
+    chain = branch_chain(pid, branch or snap.get("branch") or "main")
+    ids = [s["id"] for s in chain]
+    if sid not in ids:
+        return None
+    return chain[ids.index(sid) - 1] if ids.index(sid) else None
 
 
-def take_snapshot(pid, note="", title="", kind="manual"):
+def take_snapshot(pid, note="", title="", kind="manual", branch=None):
     files, total = _collect(pid)
     if not files:
         raise StoreError("Nothing to capture: no trackable files were found.")
+    bid = branch or active_branch(pid)
+    chain = branch_chain(pid, bid)
     snap = {
         "id": uuid.uuid4().hex[:12],
         "ts": time.time(),
         "note": note.strip(),
         "title": title.strip(),
         "kind": kind,
+        "branch": bid,
+        "parent": chain[-1]["id"] if chain else None,
         "files": files,
         "count": len(files),
         "bytes": total,
@@ -281,20 +290,111 @@ def update_snapshot(pid, sid, note=None, title=None):
 
 
 def delete_snapshot(pid, sid):
-    snaps = [s for s in load_snapshots(pid) if s["id"] != sid]
+    snaps = load_snapshots(pid)
+    dead = next((s for s in snaps if s["id"] == sid), None)
+    parent = dead.get("parent") if dead else None
+    snaps = [s for s in snaps if s["id"] != sid]
+    for s in snaps:
+        if s.get("parent") == sid:
+            s["parent"] = parent
     save_snapshots(pid, snaps)
 
 
-def has_changes(pid):
+def has_changes(pid, branch=None):
     """True when the folder differs from the newest snapshot (used by auto-save)."""
-    snaps = load_snapshots(pid)
-    if not snaps:
+    chain = branch_chain(pid, branch or active_branch(pid))
+    if not chain:
         return True
     try:
         current, _total = _collect(pid, store_objects=False)
     except StoreError:
         return False
-    return current != snaps[-1]["files"]
+    return current != chain[-1]["files"]
+
+
+# --------------------------------------------------------------------- branches
+
+def load_branches(pid):
+    data = _read_json(branches_file(pid), [])
+    branches = [b for b in data if isinstance(b, dict) and b.get("id") and b.get("name")]
+    if not any(b["id"] == "main" for b in branches):
+        created = (get_project(pid) or {}).get("created") or time.time()
+        branches.insert(0, {"id": "main", "name": "main", "base": None, "created": created})
+    return branches
+
+
+def save_branches(pid, branches):
+    _write_json(branches_file(pid), branches)
+
+
+def get_branch(pid, bid):
+    for b in load_branches(pid):
+        if b["id"] == bid:
+            return b
+    return None
+
+
+def active_branch(pid):
+    bid = (get_project(pid) or {}).get("branch") or "main"
+    return bid if get_branch(pid, bid) else "main"
+
+
+def set_active_branch(pid, bid):
+    projects = load_projects()
+    for p in projects:
+        if p["id"] == pid:
+            p["branch"] = bid
+    save_projects(projects)
+
+
+def add_branch(pid, name, from_sid):
+    """Start a new branch at `from_sid`; it inherits the history before that moment."""
+    name = (name or "").strip()
+    if not name:
+        raise StoreError("Give the branch a name.")
+    branches = load_branches(pid)
+    if any(b["name"].lower() == name.lower() for b in branches):
+        raise StoreError(f"A branch called “{name}” already exists.")
+    if not get_snapshot(pid, from_sid):
+        raise StoreError("Pick the moment the branch should start from.")
+    branch = {
+        "id": uuid.uuid4().hex[:8],
+        "name": name,
+        "base": from_sid,
+        "created": time.time(),
+    }
+    branches.append(branch)
+    save_branches(pid, branches)
+    return branch
+
+
+def branch_chain(pid, bid=None):
+    """The moments of one branch: its own snapshots plus the history it branched from."""
+    bid = bid or active_branch(pid)
+    snaps = load_snapshots(pid)
+    by_id = {s["id"]: s for s in snaps}
+    branch = get_branch(pid, bid) or {}
+    heads = [s for s in snaps if (s.get("branch") or "main") == bid]
+    head_id = heads[-1]["id"] if heads else branch.get("base")
+    seen = set()
+    chain = []
+    while head_id and head_id not in seen:
+        seen.add(head_id)
+        snap = by_id.get(head_id)
+        if snap is None:
+            break
+        chain.append(snap)
+        parent = snap.get("parent")
+        if parent is None:
+            # snapshots captured before branching have no parent link yet
+            own = snap.get("branch") or "main"
+            earlier = [s for s in snaps
+                       if s["id"] not in seen and s["ts"] <= snap["ts"]
+                       and (s.get("branch") or "main") == own]
+            parent = earlier[-1]["id"] if earlier else (get_branch(pid, own) or {}).get("base")
+        head_id = parent
+    chain.sort(key=lambda s: s.get("ts", 0))
+    return chain
 
 
 # ------------------------------------------------------------------------- blobs
@@ -418,8 +518,9 @@ def restore(pid, snap, whole=True, rels=None, safety=True):
 
 # ------------------------------------------------------------------------ stats
 
-def project_stats(pid):
-    snaps = load_snapshots(pid)
+def project_stats(pid, branch=None):
+    bid = branch or active_branch(pid)
+    snaps = branch_chain(pid, bid)
     proj = get_project(pid)
     live = {}
     if proj and os.path.isdir(proj["path"]):
@@ -460,6 +561,9 @@ def project_stats(pid):
         "span_days": span,
         "first": snaps[0]["ts"] if snaps else None,
         "last": snaps[-1]["ts"] if snaps else None,
+        "branch": bid,
+        "branch_name": (get_branch(pid, bid) or {}).get("name", "main"),
+        "branches": len(load_branches(pid)),
     }
 
 

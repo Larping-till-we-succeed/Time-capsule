@@ -14,7 +14,7 @@ import store
 from theme import ACCENT, MUTED, QSS, chip, hbox
 from ui_compare import CompareView
 from ui_dialogs import (
-    ConfirmDialog, NewProjectDialog, NewSnapshotDialog, RestoreDialog,
+    ConfirmDialog, NewBranchDialog, NewProjectDialog, NewSnapshotDialog, RestoreDialog,
 )
 from ui_settings import SettingsView
 from ui_sidebar import Sidebar
@@ -32,6 +32,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("TimeCapsule")
         self.resize(1440, 900)
         self.pid = None
+        self.branch = "main"
         self.projects = []
         self.last_auto = None
         self.auto_cfg = store.autosave_config()
@@ -94,6 +95,8 @@ class MainWindow(QMainWindow):
         self.timeline.compare_requested.connect(self.on_compare)
         self.timeline.note_saved.connect(lambda: self.refresh(keep=True))
         self.timeline.delete_requested.connect(self.on_delete)
+        self.timeline.branch_selected.connect(self.on_branch_selected)
+        self.timeline.new_branch.connect(self.on_new_branch)
         self.compare = CompareView()
         self.stats = StatsView()
         self.settings = SettingsView()
@@ -144,6 +147,7 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(WELCOME)
             self.side.set_view("timeline")
             return
+        self.branch = store.active_branch(self.pid)
         proj = store.get_project(self.pid)
         self.ptitle.setText(proj["name"])
         self.ppath.setText(proj["path"])
@@ -160,17 +164,18 @@ class MainWindow(QMainWindow):
         else:
             self.pchips.addWidget(chip("no snapshots yet", MUTED))
         self.pchips.addStretch(1)
-        self.timeline.load(self.pid, select)
+        self.timeline.load(self.pid, select, self.branch)
         index = self.stack.currentIndex()
         if index == PAGES["compare"]:
-            self.compare.load(self.pid)
+            self.compare.load(self.pid, branch=self.branch)
         elif index == PAGES["stats"]:
-            self.stats.load(self.pid)
+            self.stats.load(self.pid, self.branch)
 
     def select_project(self, pid):
         if pid == self.pid:
             return
         self.pid = pid
+        self.branch = store.active_branch(pid)
         self.side.set_view("timeline")
         self.stack.setCurrentIndex(PAGES["timeline"])
         self.refresh()
@@ -182,9 +187,9 @@ class MainWindow(QMainWindow):
             return
         self.stack.setCurrentIndex(PAGES[key])
         if key == "compare":
-            self.compare.load(self.pid)
+            self.compare.load(self.pid, branch=self.branch)
         elif key == "stats":
-            self.stats.load(self.pid)
+            self.stats.load(self.pid, self.branch)
         elif key == "settings":
             self.settings.load(self.auto_cfg, self.last_auto)
         else:
@@ -221,13 +226,47 @@ class MainWindow(QMainWindow):
             return
         title, note = dlg.values()
         try:
-            snap = store.take_snapshot(self.pid, note=note, title=title)
+            snap = store.take_snapshot(self.pid, note=note, title=title, branch=self.branch)
         except store.StoreError as e:
             QMessageBox.warning(self, "TimeCapsule", str(e))
             return
         self.side.set_view("timeline")
         self.stack.setCurrentIndex(PAGES["timeline"])
         self.refresh(select=snap["id"])
+
+    def on_branch_selected(self, bid):
+        if not self.pid:
+            return
+        store.set_active_branch(self.pid, bid)
+        self.branch = bid
+        self.refresh()
+
+    def on_new_branch(self, from_sid):
+        if not self.pid:
+            return
+        chain = store.branch_chain(self.pid, self.branch)
+        from_sid = from_sid or (chain[-1]["id"] if chain else "")
+        if not from_sid:
+            QMessageBox.information(
+                self, "New branch",
+                "Capture at least one snapshot first — a branch starts from a moment in the timeline.",
+            )
+            return
+        snap = store.get_snapshot(self.pid, from_sid)
+        branch_name = (store.get_branch(self.pid, self.branch) or {}).get("name", "main")
+        dlg = NewBranchDialog(self, snap, branch_name)
+        if not dlg.exec():
+            return
+        try:
+            branch = store.add_branch(self.pid, dlg.values(), from_sid)
+        except store.StoreError as e:
+            QMessageBox.warning(self, "TimeCapsule", str(e))
+            return
+        store.set_active_branch(self.pid, branch["id"])
+        self.branch = branch["id"]
+        self.side.set_view("timeline")
+        self.stack.setCurrentIndex(PAGES["timeline"])
+        self.refresh()
 
     def save_settings(self):
         cfg = store.settings()
@@ -331,7 +370,7 @@ class MainWindow(QMainWindow):
             return
         self.side.set_view("compare")
         self.stack.setCurrentIndex(PAGES["compare"])
-        self.compare.load(self.pid, a, b)
+        self.compare.load(self.pid, a, b, self.branch)
 
 
 def main():

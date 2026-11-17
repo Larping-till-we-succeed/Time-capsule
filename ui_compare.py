@@ -152,9 +152,9 @@ class CompareView(QWidget):
         root.addLayout(body, 1)
 
     # ------------------------------------------------------------------ data
-    def load(self, pid, a=None, b=None):
+    def load(self, pid, a=None, b=None, branch=None):
         self.pid = pid
-        self.snaps = store.load_snapshots(pid) if pid else []
+        self.snaps = store.branch_chain(pid, branch) if pid else []
         self.ca.blockSignals(True)
         self.cb.blockSignals(True)
         self.ca.clear()

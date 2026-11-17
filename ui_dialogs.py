@@ -123,6 +123,39 @@ class NewProjectDialog(BaseDialog):
         return self.folder(), self.name.text().strip(), self.create.isChecked()
 
 
+class NewBranchDialog(BaseDialog):
+    """Name a new branch of an existing project, starting at a chosen moment."""
+
+    def __init__(self, parent=None, snap=None, branch_name="main"):
+        super().__init__(parent, "New branch", 540)
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("e.g. try-a-different-approach")
+        self.root.addLayout(_field("BRANCH NAME", self.name))
+        when = store.fmt_stamp(snap["ts"]) if snap else "the latest moment"
+        info = QLabel(
+            f"The branch starts at {when} and keeps the history it grew from. Snapshots you "
+            f"capture on it are stored in the same project and never touch “{branch_name}”."
+        )
+        info.setObjectName("sub")
+        info.setWordWrap(True)
+        self.root.addWidget(info)
+        self.hint = QLabel("You can switch between branches at any time in the timeline.")
+        self.hint.setObjectName("sub")
+        self.hint.setWordWrap(True)
+        self.root.addWidget(self.hint)
+        self.finish("Create branch")
+
+    def accept(self):
+        if not self.name.text().strip():
+            self.hint.setText("Give the branch a name.")
+            self.hint.setStyleSheet(f"color:{RED}")
+            return
+        super().accept()
+
+    def values(self):
+        return self.name.text().strip()
+
+
 class NewSnapshotDialog(BaseDialog):
     def __init__(self, parent=None, project=None):
         super().__init__(parent, "Capture a snapshot", 560)

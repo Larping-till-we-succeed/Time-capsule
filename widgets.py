@@ -128,32 +128,43 @@ class BarChart(QWidget):
 
 
 class ProjectTimeline(QWidget):
-    """A single horizontal rail showing every moment in a project's life."""
+    """All moments of a project as lines; a branch forks off the moment it started."""
 
     selected = Signal(str)
+
+    HEIGHT = 92
+    TOP = 6
+    BOTTOM = 20
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.snaps = []
+        self.branches = [{"id": "main", "name": "main", "base": None}]
+        self.active = "main"
         self.start = None
         self.end = None
         self.selected_id = None
         self.start_label = ""
         self.end_label = ""
+        self._dots = []
         self.setFixedHeight(76)
         self.setMouseTracking(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     # ------------------------------------------------------------------ data
-    def set_data(self, snaps, start=None, end=None, selected=None, start_label="", end_label=""):
+    def set_graph(self, snaps, branches, active="main", start=None, end=None,
+                  selected=None, start_label="", end_label=""):
         self.snaps = list(snaps)
+        self.branches = list(branches) or [{"id": "main", "name": "main", "base": None}]
+        self.active = active or "main"
         self.start = start
         self.end = end
         self.start_label = start_label
         self.end_label = end_label
         if selected is not None:
             self.selected_id = selected
+        self.setFixedHeight(self.HEIGHT)
         self.update()
 
     def set_selected(self, sid):
@@ -161,30 +172,37 @@ class ProjectTimeline(QWidget):
             self.selected_id = sid
             self.update()
 
+    def _lanes(self):
+        ordered = sorted(self.branches, key=lambda b: (b["id"] != "main", b.get("created") or 0))
+        return ordered, {b["id"]: i for i, b in enumerate(ordered)}
+
+    def _lane_y(self, index, count):
+        """Each branch sits in the middle of its own equal slice of the box."""
+        span = max(1.0, self.height() - self.TOP - self.BOTTOM)
+        return self.TOP + span * (index + 0.5) / max(1, count)
+
+    @staticmethod
+    def _branch_of(snap):
+        return snap.get("branch") or "main"
+
     def _axis(self):
         left, right = 16.0, max(17.0, self.width() - 16.0)
-        if self.start is not None:
-            t0 = float(self.start)
-        else:
-            t0 = float(self.snaps[0]["ts"]) if self.snaps else 0.0
-        if self.end is not None:
-            t1 = float(self.end)
-        else:
-            t1 = float(self.snaps[-1]["ts"]) if self.snaps else t0 + 1.0
+        stamps = [float(s["ts"]) for s in self.snaps]
+        t0 = float(self.start) if self.start is not None else (min(stamps) if stamps else 0.0)
+        t1 = float(self.end) if self.end is not None else (max(stamps) if stamps else t0 + 1.0)
         if t1 <= t0:
             t1 = t0 + 1.0
         return left, right, t0, t1
 
-    def _x(self, ts):
-        left, right, t0, t1 = self._axis()
+    def _x(self, ts, left, right, t0, t1):
         frac = (float(ts) - t0) / (t1 - t0)
         return left + (right - left) * max(0.0, min(1.0, frac))
 
-    def _dot_at(self, px):
+    def _dot_at(self, pos):
         best = None
-        for s in self.snaps:
-            gap = abs(self._x(s["ts"]) - px)
-            if gap <= 14 and (best is None or gap < best[0]):
+        for x, y, s in self._dots:
+            gap = ((x - pos.x()) ** 2 + (y - pos.y()) ** 2) ** 0.5
+            if gap <= 12 and (best is None or gap < best[0]):
                 best = (gap, s)
         return best[1] if best else None
 
@@ -192,8 +210,9 @@ class ProjectTimeline(QWidget):
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        left, right, _t0, _t1 = self._axis()
-        y = 34.0
+        left, right, t0, t1 = self._axis()
+        ordered, lane = self._lanes()
+        self._dots = []
         f = QFont()
         f.setPixelSize(10)
         p.setFont(f)
@@ -201,40 +220,78 @@ class ProjectTimeline(QWidget):
             p.setPen(QColor(MUTED))
             p.drawText(self.rect(), Qt.AlignCenter, "Every capture you make lands on this line")
             return
-        p.setPen(QPen(QColor("#23262e"), 2))
-        p.drawLine(int(left), int(y), int(right), int(y))
+        by_id = {s["id"]: s for s in self.snaps}
+        count = len(ordered)
+        ys = {b["id"]: self._lane_y(lane[b["id"]], count) for b in ordered}
+        tick_y = ys.get("main", self._lane_y(0, count))
         p.setPen(QPen(QColor("#2f343e"), 1))
         for frac in (0.0, 0.5, 1.0):
             x = left + (right - left) * frac
-            p.drawLine(int(x), int(y - 5), int(x), int(y + 5))
-        radius = 4.5 if len(self.snaps) <= 40 else 3.5
-        for s in self.snaps:
-            x = self._x(s["ts"])
-            active = s["id"] == self.selected_id
-            color = "#454b57" if s.get("kind") == "auto" else "#8b929e"
-            if active:
-                color = ACCENT
-            paint_dot(p, x, y, radius + (1.2 if active else 0), color, glow=active)
+            p.drawLine(int(x), int(tick_y - 5), int(x), int(tick_y + 5))
+
+        for b in ordered:
+            own = sorted((s for s in self.snaps if self._branch_of(s) == b["id"]),
+                         key=lambda s: s["ts"])
+            y = float(ys[b["id"]])
+            is_active = b["id"] == self.active
+            line_color = QColor("#5a616d" if is_active else "#2c313a")
+            base = by_id.get(b.get("base") or "")
+            if base is not None:
+                bx = self._x(base["ts"], left, right, t0, t1)
+                by = float(ys.get(self._branch_of(base), y))
+                p.setPen(QPen(QColor("#1d2129"), 1))
+                p.drawLine(int(left), int(y), int(bx), int(y))
+                p.setPen(QPen(line_color, 2))
+                p.drawLine(int(bx), int(by), int(bx + 16), int(y))
+                p.drawLine(int(bx + 16), int(y), int(right), int(y))
+            else:
+                p.setPen(QPen(line_color, 2 if is_active else 1))
+                p.drawLine(int(left), int(y), int(right), int(y))
+            label = b["name"]
+            tw = p.fontMetrics().horizontalAdvance(label) + 14
+            rect = QRectF(right - tw, y - 7, tw, 14)
+            p.fillRect(rect, QColor(BG))
+            p.setPen(QColor(ACCENT if is_active else DIM))
+            p.drawText(rect, Qt.AlignCenter, label)
+            radius = 4.5 if len(own) <= 40 else 3.5
+            for s in own:
+                x = self._x(s["ts"], left, right, t0, t1)
+                chosen = s["id"] == self.selected_id
+                if chosen:
+                    color = ACCENT
+                elif is_active:
+                    color = "#5a616d" if s.get("kind") == "auto" else "#8b929e"
+                else:
+                    color = "#3d434e"
+                paint_dot(p, x, y, radius + (1.2 if chosen else 0), color, glow=chosen)
+                self._dots.append((x, y, s))
+
+        bottom = self.height() - 16
         p.setPen(QColor(DIM))
         if self.start_label:
-            p.drawText(QRectF(left, y + 16, 170, 14), Qt.AlignLeft | Qt.AlignVCenter, self.start_label)
+            p.drawText(QRectF(left, bottom, 170, 14), Qt.AlignLeft | Qt.AlignVCenter, self.start_label)
         if self.end_label:
-            p.drawText(QRectF(right - 170, y + 16, 170, 14), Qt.AlignRight | Qt.AlignVCenter, self.end_label)
+            p.drawText(QRectF(right - 170, bottom, 170, 14),
+                       Qt.AlignRight | Qt.AlignVCenter, self.end_label)
 
     # ----------------------------------------------------------- interaction
+    def _branch_name(self, snap):
+        bid = self._branch_of(snap)
+        return next((b["name"] for b in self.branches if b["id"] == bid), bid)
+
     def mouseMoveEvent(self, e):
-        s = self._dot_at(e.position().x())
+        s = self._dot_at(e.position())
         if s is None:
             self.setToolTip("")
         else:
             kind = "Auto-save" if s.get("kind") == "auto" else "Snapshot"
             stamp = time.strftime("%d %b %Y · %H:%M", time.localtime(s["ts"]))
-            self.setToolTip(f"{kind} · {stamp}")
+            self.setToolTip(f"{kind} · {stamp} · {self._branch_name(s)}")
         super().mouseMoveEvent(e)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
-            s = self._dot_at(e.position().x())
+            s = self._dot_at(e.position())
             if s is not None:
                 self.selected.emit(s["id"])
         super().mousePressEvent(e)

@@ -97,7 +97,7 @@ class StatsView(QWidget):
         box.addWidget(b)
         return box
 
-    def load(self, pid):
+    def load(self, pid, branch=None):
         self.pid = pid
         while self.fcol.count():
             item = self.fcol.takeAt(0)
@@ -115,7 +115,7 @@ class StatsView(QWidget):
         if not pid:
             self.chart.set_data([])
             return
-        s = store.project_stats(pid)
+        s = store.project_stats(pid, branch)
         proj = store.get_project(pid)
         self.c_snaps.set(s["snapshots"])
         self.c_files.set(s["files"], "tracked in the live folder")
@@ -157,6 +157,7 @@ class StatsView(QWidget):
         self.fcol.addStretch(1)
 
         for title, value in (
+            ("Branch", f"{s['branch_name']} · {s['branches']} total"),
             ("Timeline span", f"{s['span_days']:.1f} days" if s["span_days"] else "one moment"),
             ("First capture", store.fmt_stamp(s["first"]) if s["first"] else "—"),
             ("Latest capture", store.fmt_stamp(s["last"]) if s["last"] else "—"),
