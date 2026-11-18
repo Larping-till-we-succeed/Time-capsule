@@ -60,7 +60,7 @@ class SnapshotRow(QFrame):
         else:
             meta.addWidget(chip("first snapshot", MUTED))
         for name in (branches or []):
-            c = chip(f"⑃ {name}", "#c4b5fd")
+            c = chip(f"⑃ {name}", "#7dd3fc")
             c.setToolTip(f"The branch “{name}” starts from this moment")
             meta.addWidget(c)
         meta.addStretch(1)
@@ -73,14 +73,14 @@ class SnapshotRow(QFrame):
     def _apply_style(self):
         if self.selected:
             self.setStyleSheet(
-                f"QFrame#snaprow{{background:#171a20;border:1px solid #4a3a1c;border-left:3px solid {ACCENT};"
+                f"QFrame#snaprow{{background:#10293f;border:1px solid #1d5c8c;border-left:3px solid {ACCENT};"
                 "border-radius:0 12px 12px 0}}"
             )
         else:
             self.setStyleSheet(
                 "QFrame#snaprow{background:transparent;border:1px solid transparent;"
                 "border-left:3px solid transparent;border-radius:0 12px 12px 0}"
-                "QFrame#snaprow:hover{background:#14161b;border:1px solid #202430;border-left:3px solid #2c2f38}"
+                "QFrame#snaprow:hover{background:#0c2033;border:1px solid #16344d;border-left:3px solid #1b3f5c}"
             )
 
     def set_selected(self, on):
@@ -99,10 +99,10 @@ class SnapshotRow(QFrame):
         p.setRenderHint(QPainter.Antialiasing)
         h = self.height()
         x = 24
-        pen = QPen(QColor("#2a2e38"), 2)
+        pen = QPen(QColor("#1a3b58"), 2)
         p.setPen(pen)
         p.drawLine(x, 0, x, h)
-        color = ACCENT if self.selected else "#3a3f4a"
+        color = ACCENT if self.selected else "#2f5575"
         if self.selected:
             glow = QColor(ACCENT)
             glow.setAlpha(40)
@@ -113,7 +113,7 @@ class SnapshotRow(QFrame):
         p.setPen(Qt.PenStyle.NoPen)
         p.drawEllipse(QRectF(x - 5, h / 2 - 5, 10, 10))
         if self.selected:
-            p.setBrush(QColor("#171a20"))
+            p.setBrush(QColor("#10293f"))
             p.drawEllipse(QRectF(x - 2, h / 2 - 2, 4, 4))
 
 
@@ -141,8 +141,8 @@ class TimelineView(QWidget):
         rail = QFrame()
         rail.setObjectName("card")
         rl = QVBoxLayout(rail)
-        rl.setContentsMargins(18, 12, 18, 8)
-        rl.setSpacing(4)
+        rl.setContentsMargins(20, 14, 20, 8)
+        rl.setSpacing(2)
         rhead = hbox(spacing=10)
         rcap = QLabel("PROJECT TIMELINE")
         rcap.setObjectName("tiny")
@@ -151,11 +151,9 @@ class TimelineView(QWidget):
         rhead.addWidget(rcap)
         rhead.addWidget(self.rail_span)
         rhead.addStretch(1)
-        rhead.addWidget(chip("● manual snapshot", "#8b929e"))
+        rhead.addWidget(chip("● manual snapshot", "#8fa6c0"))
         rhead.addWidget(chip("● auto-save", "#454b57"))
-        rl.addLayout(rhead)
-
-        brow = hbox(spacing=8)
+        rhead.addSpacing(10)
         bcap = QLabel("BRANCH")
         bcap.setObjectName("tiny")
         self.branch_box = QComboBox()
@@ -167,20 +165,22 @@ class TimelineView(QWidget):
         newb.setCursor(Qt.PointingHandCursor)
         newb.setToolTip("Start a new branch at the selected moment")
         newb.clicked.connect(lambda: self.new_branch.emit(self.selected or ""))
-        brow.addWidget(bcap)
-        brow.addWidget(self.branch_box)
-        brow.addStretch(1)
-        brow.addWidget(newb)
-        rl.addLayout(brow)
+        rhead.addWidget(bcap)
+        rhead.addWidget(self.branch_box)
+        rhead.addWidget(newb)
+        rl.addLayout(rhead)
         self.rail = ProjectTimeline()
         self.rail.selected.connect(self.select)
         rl.addWidget(self.rail)
         root.addWidget(rail)
 
         cols = QHBoxLayout()
-        cols.setSpacing(20)
+        cols.setSpacing(16)
 
-        left = QVBoxLayout()
+        leftcard = QFrame()
+        leftcard.setObjectName("card")
+        left = QVBoxLayout(leftcard)
+        left.setContentsMargins(16, 14, 8, 12)
         left.setSpacing(10)
         head = hbox(spacing=10)
         cap = QLabel("HISTORY")
@@ -204,12 +204,11 @@ class TimelineView(QWidget):
         self.lcol.setSpacing(2)
         self.lscroll.setWidget(self.lbody)
         left.addWidget(self.lscroll, 1)
-        leftwrap = QWidget()
-        leftwrap.setLayout(left)
-        leftwrap.setFixedWidth(430)
-        cols.addWidget(leftwrap)
+        leftcard.setFixedWidth(424)
+        cols.addWidget(leftcard)
 
         self.detail = SnapshotDetail()
+        self.detail.setMinimumWidth(470)
         self.detail.restore_all.connect(self.restore_all.emit)
         self.detail.restore_file.connect(lambda sid, rel: self.restore_file.emit(sid, rel))
         self.detail.compare_previous.connect(self._compare_prev)
@@ -332,7 +331,7 @@ class TimelineView(QWidget):
             if day != last_day:
                 head = QLabel(store.day_label(s["ts"]).upper())
                 head.setObjectName("tiny")
-                head.setStyleSheet("padding:14px 0 6px 46px;color:#6f7683")
+                head.setStyleSheet("padding:14px 0 6px 46px;color:#6f8aa6")
                 self.lcol.addWidget(head)
                 last_day = day
             row = SnapshotRow(s, prev_by_id.get(s["id"]), s["id"] == self.selected,

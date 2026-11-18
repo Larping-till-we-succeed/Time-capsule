@@ -5,14 +5,16 @@ import sys
 import time
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
 import store
-from theme import ACCENT, MUTED, QSS, chip, hbox
+from theme import ACCENT, MUTED, QSS, chip, hbox, hline
 from ui_compare import CompareView
+from ui_dashboard import Dashboard, HeroHeader, StatusBar
 from ui_dialogs import (
     ConfirmDialog, NewBranchDialog, NewProjectDialog, NewSnapshotDialog, RestoreDialog,
 )
@@ -22,8 +24,8 @@ from ui_stats import StatsView
 from ui_timeline import TimelineView
 from widgets import EmptyState
 
-PAGES = {"timeline": 0, "compare": 1, "stats": 2, "settings": 3}
-WELCOME = 4
+PAGES = {"dashboard": 0, "timeline": 1, "compare": 2, "stats": 3, "settings": 4}
+WELCOME = 5
 
 
 class MainWindow(QMainWindow):
@@ -31,17 +33,24 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("TimeCapsule")
         self.resize(1440, 900)
+        self.setMinimumSize(1120, 720)
         self.pid = None
         self.branch = "main"
         self.projects = []
         self.last_auto = None
+        self._overview = None
         self.auto_cfg = store.autosave_config()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.on_auto_tick)
 
         root = QWidget()
         root.setObjectName("root")
-        lay = QHBoxLayout(root)
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        body = QWidget()
+        lay = QHBoxLayout(body)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
@@ -53,15 +62,22 @@ class MainWindow(QMainWindow):
 
         right = QWidget()
         rl = QVBoxLayout(right)
-        rl.setContentsMargins(28, 22, 28, 22)
-        rl.setSpacing(16)
+        rl.setContentsMargins(22, 18, 22, 12)
+        rl.setSpacing(12)
+
+        self.hero = HeroHeader()
+        self.hero.newproj.clicked.connect(self.on_new_project)
+        self.hero.newsnap.clicked.connect(self.on_new_snapshot)
+        self.hero.search.textChanged.connect(lambda text: self.dash.set_query(text))
+        self.hero.search.returnPressed.connect(lambda: self.show_view("dashboard"))
+        rl.addWidget(self.hero)
 
         self.head = QWidget()
         hl = QHBoxLayout(self.head)
-        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setContentsMargins(2, 2, 2, 0)
         hl.setSpacing(12)
         col = QVBoxLayout()
-        col.setSpacing(3)
+        col.setSpacing(2)
         self.ptitle = QLabel("")
         self.ptitle.setObjectName("title")
         self.ppath = QLabel("")
@@ -69,25 +85,17 @@ class MainWindow(QMainWindow):
         self.pchips = hbox(spacing=8)
         col.addWidget(self.ptitle)
         col.addWidget(self.ppath)
-        col.addSpacing(4)
+        col.addSpacing(3)
         col.addLayout(self.pchips)
         hl.addLayout(col, 1)
-        self.newprojbtn = QPushButton("＋   New project")
-        self.newprojbtn.setObjectName("ghost")
-        self.newprojbtn.setCursor(Qt.PointingHandCursor)
-        self.newprojbtn.setMinimumHeight(42)
-        self.newprojbtn.setToolTip("Create a project and start capturing it")
-        self.newprojbtn.clicked.connect(self.on_new_project)
-        self.snapbtn = QPushButton("＋   New snapshot")
-        self.snapbtn.setObjectName("primary")
-        self.snapbtn.setCursor(Qt.PointingHandCursor)
-        self.snapbtn.setMinimumHeight(42)
-        self.snapbtn.clicked.connect(self.on_new_snapshot)
-        hl.addWidget(self.newprojbtn, 0, Qt.AlignTop)
-        hl.addWidget(self.snapbtn, 0, Qt.AlignTop)
         rl.addWidget(self.head)
 
         self.stack = QStackedWidget()
+        self.dash = Dashboard()
+        self.dash.new_snapshot.connect(self.on_new_snapshot)
+        self.dash.compare.connect(self.compare_latest)
+        self.dash.restore.connect(self.restore_latest)
+        self.dash.open_timeline.connect(lambda sid: self.open_timeline(sid))
         self.timeline = TimelineView()
         self.timeline.new_snapshot.connect(self.on_new_snapshot)
         self.timeline.restore_all.connect(self.on_restore_all)
@@ -101,7 +109,7 @@ class MainWindow(QMainWindow):
         self.stats = StatsView()
         self.settings = SettingsView()
         self.settings.save_requested.connect(self.save_settings)
-        for w in (self.timeline, self.compare, self.stats, self.settings):
+        for w in (self.dash, self.timeline, self.compare, self.stats, self.settings):
             self.stack.addWidget(w)
 
         self.welcome = QWidget()
@@ -119,33 +127,61 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.welcome)
         rl.addWidget(self.stack, 1)
         lay.addWidget(right, 1)
+        outer.addWidget(body, 1)
+
+        self.status = StatusBar()
+        self.status.settings_clicked.connect(lambda: self.show_view("settings"))
+        self.status.autosave_toggled.connect(self.set_autosave)
+        outer.addWidget(self.status)
         self.setCentralWidget(root)
+
+        for seq, slot in (
+            ("Ctrl+S", self.on_new_snapshot),
+            ("Ctrl+Shift+C", self.compare_latest),
+            ("Ctrl+R", self.restore_latest),
+            ("Ctrl+T", lambda: self.show_view("timeline")),
+            ("Ctrl+D", lambda: self.show_view("dashboard")),
+            ("Ctrl+K", self.focus_search),
+        ):
+            QShortcut(QKeySequence(seq), self).activated.connect(slot)
 
         self.refresh()
         self.apply_autosave()
 
     # ------------------------------------------------------------------ state
-    def totals(self):
-        counts = {}
-        used = 0
-        for p in self.projects:
-            counts[p["id"]] = len(store.load_snapshots(p["id"]))
-            used += store.storage_bytes(p["id"])
-        counts["__storage__"] = f"Project storage · {store.fmt_bytes(used)}"
+    def totals(self, overview=None):
+        """Sidebar counters built from a single library pass per refresh."""
+        view = overview or store.library_stats()
+        counts = dict(view["counts"])
+        counts["__storage__"] = f"Project storage · {store.fmt_bytes(view['used'])}"
         return counts
+
+    def focus_search(self):
+        self.show_view("dashboard")
+        self.hero.search.setFocus()
+        self.hero.search.selectAll()
+
+    def _sync_head(self):
+        index = self.stack.currentIndex()
+        self.head.setVisible(self.pid is not None and index not in (PAGES["dashboard"], WELCOME))
 
     def refresh(self, select=None, keep=False):
         self.projects = store.load_projects()
         ids = [p["id"] for p in self.projects]
         if self.pid not in ids:
             self.pid = ids[0] if ids else None
-        self.side.reload(self.projects, self.pid, self.totals())
+        view = store.library_stats()
+        self._overview = view
+        self.side.reload(self.projects, self.pid, self.totals(view))
         has = self.pid is not None
-        self.head.setVisible(has)
-        self.snapbtn.setEnabled(has)
+        self.hero.newsnap.setEnabled(has)
         if not has:
+            self.side.set_view("dashboard")
             self.stack.setCurrentIndex(WELCOME)
-            self.side.set_view("timeline")
+            self._sync_head()
+            self._overview = view
+            self.dash.load(None)
+            self.status.update_state(None, self.auto_cfg, self.timer.remainingTime(), self.last_auto)
             return
         self.branch = store.active_branch(self.pid)
         proj = store.get_project(self.pid)
@@ -157,43 +193,84 @@ class MainWindow(QMainWindow):
             w = item.widget()
             if w:
                 w.deleteLater()
-        self.pchips.addWidget(chip(f"{len(snaps)} snapshots", ACCENT, "#2a2112"))
+        self.pchips.addWidget(chip(f"{len(snaps)} snapshots", ACCENT, "#0e3350"))
         if snaps:
             self.pchips.addWidget(chip(f"latest {store.ago(snaps[-1]['ts'])}", MUTED))
             self.pchips.addWidget(chip(store.fmt_bytes(store.storage_bytes(self.pid)), MUTED))
         else:
             self.pchips.addWidget(chip("no snapshots yet", MUTED))
         self.pchips.addStretch(1)
-        self.timeline.load(self.pid, select, self.branch)
         index = self.stack.currentIndex()
+        if index == WELCOME:
+            self.side.set_view("dashboard")
+            self.stack.setCurrentIndex(PAGES["dashboard"])
+            index = PAGES["dashboard"]
+        if index == PAGES["dashboard"]:
+            self.dash.load(self.pid, self.branch, view)
+        if index == PAGES["timeline"] or select is not None:
+            self.timeline.load(self.pid, select, self.branch)
         if index == PAGES["compare"]:
             self.compare.load(self.pid, branch=self.branch)
         elif index == PAGES["stats"]:
             self.stats.load(self.pid, self.branch)
+        self._sync_head()
+        self.status.update_state(self.pid, self.auto_cfg, self.timer.remainingTime(), self.last_auto)
 
     def select_project(self, pid):
         if pid == self.pid:
             return
         self.pid = pid
         self.branch = store.active_branch(pid)
-        self.side.set_view("timeline")
-        self.stack.setCurrentIndex(PAGES["timeline"])
+        self.side.set_view("dashboard")
+        self.stack.setCurrentIndex(PAGES["dashboard"])
         self.refresh()
 
     def show_view(self, key):
         if key not in PAGES or not self.pid:
-            if self.pid:
-                self.side.set_view("timeline")
+            return
+        self.side.set_view(key)
+        if key == "dashboard":
+            self.dash.load(self.pid, self.branch, self._overview)
+            self.stack.setCurrentIndex(PAGES["dashboard"])
+            self._sync_head()
+            self.status.update_state(self.pid, self.auto_cfg, self.timer.remainingTime(),
+                                     self.last_auto)
+            return
+        if key == "timeline":
+            self.stack.setCurrentIndex(PAGES["timeline"])
+            self.refresh(keep=True)
             return
         self.stack.setCurrentIndex(PAGES[key])
+        self._sync_head()
         if key == "compare":
             self.compare.load(self.pid, branch=self.branch)
         elif key == "stats":
             self.stats.load(self.pid, self.branch)
         elif key == "settings":
             self.settings.load(self.auto_cfg, self.last_auto)
-        else:
-            self.refresh(keep=True)
+
+    def open_timeline(self, sid=None):
+        if not self.pid:
+            return
+        self.side.set_view("timeline")
+        self.stack.setCurrentIndex(PAGES["timeline"])
+        self.timeline.load(self.pid, sid or None, self.branch)
+        self._sync_head()
+
+    def compare_latest(self):
+        if not self.pid:
+            return
+        chain = store.branch_chain(self.pid, self.branch)
+        if len(chain) < 2:
+            return
+        self.on_compare(chain[-2]["id"], chain[-1]["id"])
+
+    def restore_latest(self):
+        if not self.pid:
+            return
+        chain = store.branch_chain(self.pid, self.branch)
+        if chain:
+            self.on_restore_all(chain[-1]["id"])
 
     # ---------------------------------------------------------------- actions
     def on_new_project(self):
@@ -275,6 +352,13 @@ class MainWindow(QMainWindow):
         self.apply_autosave()
         self.settings.mark_saved()
 
+    def set_autosave(self, on):
+        cfg = store.settings()
+        cfg["auto_save"] = bool(on)
+        store.save_settings(cfg)
+        self.apply_autosave()
+        self.refresh(keep=True)
+
     # ---------------------------------------------------------------- auto-save
     def apply_autosave(self):
         self.auto_cfg = store.autosave_config()
@@ -282,8 +366,9 @@ class MainWindow(QMainWindow):
             self.timer.start(self.auto_cfg["minutes"] * 60_000)
         else:
             self.timer.stop()
-        self.side.set_autosave(self.auto_cfg, self.last_auto)
         self.settings.set_state(self.auto_cfg, self.last_auto)
+        self.status.update_state(self.pid, self.auto_cfg, self.timer.remainingTime(),
+                                 self.last_auto)
 
     def on_auto_tick(self):
         if not self.projects:
@@ -301,8 +386,8 @@ class MainWindow(QMainWindow):
         if captured:
             self.last_auto = time.time()
             self.refresh(keep=True)
-        self.side.set_autosave(self.auto_cfg, self.last_auto)
-        self.settings.set_state(self.auto_cfg, self.last_auto)
+        self.status.update_state(self.pid, self.auto_cfg, self.timer.remainingTime(),
+                                 self.last_auto)
 
     def on_restore_all(self, sid):
         snap = store.get_snapshot(self.pid, sid)
@@ -371,6 +456,7 @@ class MainWindow(QMainWindow):
         self.side.set_view("compare")
         self.stack.setCurrentIndex(PAGES["compare"])
         self.compare.load(self.pid, a, b, self.branch)
+        self._sync_head()
 
 
 def main():

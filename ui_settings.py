@@ -2,11 +2,12 @@
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
 import store
 from theme import DIM, GREEN, MUTED, hbox, label
+from widgets import SpinBox
 
 
 class SettingsView(QWidget):
@@ -32,7 +33,7 @@ class SettingsView(QWidget):
         cl.addWidget(title)
 
         self.enabled = QCheckBox("Capture snapshots automatically")
-        self.minutes = QSpinBox()
+        self.minutes = SpinBox()
         self.minutes.setRange(1, 1440)
         self.minutes.setSuffix(" min")
         self.minutes.setFixedWidth(120)

@@ -23,6 +23,7 @@ class CompareRow(QFrame):
         self.rel = rel
         self.kind = kind
         self.active = False
+        self.setObjectName("cmprow")
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(40)
         self._style()
@@ -44,12 +45,15 @@ class CompareRow(QFrame):
     def _style(self):
         if self.active:
             self.setStyleSheet(
-                f"QFrame{{background:#191c22;border:1px solid #3a3320;border-left:2px solid {ACCENT};border-radius:9px}}"
+                "QFrame#cmprow{background:#10293f;border:1px solid #1d5c8c;"
+                f"border-left:2px solid {ACCENT};border-radius:9px}}"
             )
         else:
             self.setStyleSheet(
-                "QFrame{background:transparent;border:1px solid transparent;border-left:2px solid transparent;border-radius:9px}"
-                "QFrame:hover{background:#14161b;border:1px solid #1e222a;border-left:2px solid #2b2f39}"
+                "QFrame#cmprow{background:transparent;border:1px solid transparent;"
+                "border-left:2px solid transparent;border-radius:9px}"
+                "QFrame#cmprow:hover{background:#0c2033;border:1px solid #16344d;"
+                "border-left:2px solid #1b3f5c}"
             )
 
     def set_active(self, on):
@@ -83,7 +87,7 @@ class CompareView(QWidget):
         self.ca = QComboBox()
         self.cb = QComboBox()
         for c in (self.ca, self.cb):
-            c.setMinimumWidth(240)
+            c.setMinimumWidth(290)
             c.setCursor(Qt.PointingHandCursor)
             c.currentIndexChanged.connect(lambda _i: self.refresh())
         swap = QPushButton("⇄")
@@ -276,8 +280,8 @@ class CompareView(QWidget):
             return
         out = []
         for kind_l, text in lines:
-            color = {"+": GREEN, "-": RED, "@": "#7dd3fc"}.get(kind_l, "#8b929e")
-            bg = {"+": "#10231a", "-": "#2a1417", "@": "#141c24"}.get(kind_l, "transparent")
+            color = {"+": GREEN, "-": RED, "@": "#7dd3fc"}.get(kind_l, "#8fa6c0")
+            bg = {"+": "#10231a", "-": "#2a1417", "@": "#0a2033"}.get(kind_l, "transparent")
             safe = html.escape(text).replace(" ", "&nbsp;") or "&nbsp;"
             out.append(
                 f"<div style='background:{bg};color:{color};white-space:pre;"

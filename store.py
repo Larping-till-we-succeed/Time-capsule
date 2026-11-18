@@ -132,6 +132,7 @@ def add_project(path, name=None):
 
 def remove_project(pid):
     save_projects([p for p in load_projects() if p["id"] != pid])
+    _STORAGE_CACHE.pop(pid, None)
     shutil.rmtree(project_dir(pid), ignore_errors=True)
 
 
@@ -411,7 +412,24 @@ def read_blob(pid, digest):
         return b""
 
 
+_STORAGE_CACHE = {}
+
+
 def storage_bytes(pid):
+    """Bytes in the object store, cached against the snapshot index.
+
+    The store only grows when a snapshot is written (blobs are never deleted), and a
+    snapshot rewrites the index afterwards, so the index timestamp is a cheap and
+    reliable cache key for large object trees.
+    """
+    try:
+        st = os.stat(snapshots_file(pid))
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    hit = _STORAGE_CACHE.get(pid)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
     total = 0
     root = objects_dir(pid)
     for dirpath, _dirs, files in os.walk(root):
@@ -420,7 +438,24 @@ def storage_bytes(pid):
                 total += os.path.getsize(os.path.join(dirpath, fn))
             except OSError:
                 pass
+    if key is not None:
+        _STORAGE_CACHE[pid] = (key, total)
     return total
+
+
+def library_stats():
+    """Counts, storage and a per-day histogram for every project, in one pass."""
+    counts = {}
+    per_day = {}
+    used = 0
+    for proj in load_projects():
+        snaps = load_snapshots(proj["id"])
+        counts[proj["id"]] = len(snaps)
+        used += storage_bytes(proj["id"])
+        for snap in snaps:
+            key = day_key(snap["ts"])
+            per_day[key] = per_day.get(key, 0) + 1
+    return {"counts": counts, "per_day": per_day, "used": used}
 
 
 # ---------------------------------------------------------------------- compare

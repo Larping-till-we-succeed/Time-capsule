@@ -22,7 +22,7 @@ class StatsView(QWidget):
         self.c_snaps = StatCard("snapshots", "0", "🕰", ACCENT)
         self.c_files = StatCard("tracked files", "0", "▤", "#7dd3fc")
         self.c_size = StatCard("project size", "0 B", "◈", GREEN)
-        self.c_store = StatCard("project storage", "0 B", "❖", "#c4b5fd")
+        self.c_store = StatCard("project storage", "0 B", "❖", "#7dd3fc")
         for c in (self.c_snaps, self.c_files, self.c_size, self.c_store):
             cards.addWidget(c)
         root.addLayout(cards)
