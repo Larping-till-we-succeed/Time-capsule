@@ -1,1 +1,7 @@
 /target
+
+# Android build outputs
+android/**/build/
+android/.gradle/
+.gradle/
+*.apk
