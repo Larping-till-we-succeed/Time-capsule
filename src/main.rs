@@ -63,6 +63,7 @@ pub struct TimelineState {
     pub all_snaps: Vec<Snapshot>,
     pub branches: Vec<Branch>,
     pub search: String,
+    pub pinned_only: bool,
     pub selected: Option<String>,
     pub detail: Option<Snapshot>,
     pub prev: Option<Snapshot>,
@@ -86,6 +87,7 @@ impl TimelineState {
         self.note_dirty = false;
         self.note_status.clear();
         self.filter.clear();
+        self.pinned_only = false;
     }
 }
 
@@ -172,6 +174,8 @@ pub struct App {
     pub focus_search: bool,
     pub project_head: Option<(String, String, usize, String, String)>,
     pub status_storage: (u64, u64),
+    pub gc_preview: Option<store::GcReport>,
+    pub verify_report: Option<store::VerifyReport>,
 }
 
 impl App {
@@ -207,6 +211,8 @@ impl App {
             focus_search: false,
             project_head: None,
             status_storage: (0, 0),
+            gc_preview: None,
+            verify_report: None,
         };
         app.reset_autosave_clock();
         app.refresh(None);
@@ -518,6 +524,72 @@ impl App {
         self.timeline.note_status.clear();
         self.timeline.detail = Some(snap);
         self.timeline.prev = prev;
+    }
+
+    pub fn notify(&mut self, title: &str, text: impl Into<String>) {
+        self.toast = Some((title.to_string(), text.into(), store::now() + 3.0));
+    }
+
+    pub fn toggle_pin(&mut self, sid: &str) {
+        let Some(pid) = self.pid.clone() else { return };
+        let Some(pinned) = store::toggle_pin(&pid, sid) else { return };
+        if let Some(detail) = self.timeline.detail.as_mut() {
+            if detail.id == sid {
+                detail.pinned = pinned;
+            }
+        }
+        for list in [&mut self.timeline.all_snaps, &mut self.timeline.chain] {
+            if let Some(s) = list.iter_mut().find(|s| s.id == sid) {
+                s.pinned = pinned;
+            }
+        }
+        self.notify(
+            if pinned { "Snapshot pinned" } else { "Snapshot unpinned" },
+            "Pinned moments stay at the top of your mind — use the Pinned filter in History.",
+        );
+    }
+
+    /// Write a snapshot into a folder the user picks; never touches the project.
+    pub fn export_restore(&mut self, sid: &str) {
+        let Some(pid) = self.pid.clone() else { return };
+        let Some(snap) = store::get_snapshot(&pid, sid) else { return };
+        let Some(base) = rfd::FileDialog::new()
+            .set_title("Choose where the restored copy should go")
+            .pick_folder()
+        else {
+            return;
+        };
+        let name = self.project().map(|p| p.name).unwrap_or_else(|| "TimeCapsule".into());
+        let safe: String = name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let dir = base.join(format!("{} restored {}", safe.trim(), sid));
+        match store::restore_export(&pid, &snap, &dir) {
+            Ok(n) => {
+                self.dialog = Some(Dialog::Message {
+                    title: "Restored to a new folder".into(),
+                    text: format!(
+                        "{} file{} written to\n{}",
+                        n,
+                        if n == 1 { "" } else { "s" },
+                        dir.display()
+                    ),
+                });
+            }
+            Err(e) => {
+                self.dialog = Some(Dialog::Message {
+                    title: "Export failed".into(),
+                    text: e.to_string(),
+                });
+            }
+        }
     }
 
     pub fn branch_points(&self) -> HashMap<String, Vec<String>> {

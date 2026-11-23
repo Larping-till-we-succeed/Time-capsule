@@ -398,14 +398,17 @@ impl App {
             .iter()
             .rev()
             .filter(|s| {
-                query.is_empty()
-                    || s.title.to_lowercase().contains(&query)
-                    || s.note.to_lowercase().contains(&query)
-                    || s.files.keys().any(|f| f.to_lowercase().contains(&query))
+                (!self.timeline.pinned_only || s.pinned)
+                    && (query.is_empty()
+                        || s.title.to_lowercase().contains(&query)
+                        || s.note.to_lowercase().contains(&query)
+                        || s.files.keys().any(|f| f.to_lowercase().contains(&query)))
             })
             .cloned()
             .collect();
-        let count_text = if query.is_empty() {
+        let count_text = if self.timeline.pinned_only {
+            format!("{} pinned", shown.len())
+        } else if query.is_empty() {
             format!("{} snapshots", self.timeline.chain.len())
         } else {
             format!("{} of {}", shown.len(), self.timeline.chain.len())
@@ -417,6 +420,44 @@ impl App {
             regular(12.0),
             MUTED,
         );
+        let pin_chip = Rect::from_min_size(
+            Pos2::new(rect.right() - 16.0 - 80.0, rect.top() + 9.0),
+            Vec2::new(80.0, 22.0),
+        );
+        let pin_resp = ui.interact(pin_chip, ui.id().with("pinned_filter"), Sense::click());
+        let on = self.timeline.pinned_only;
+        p.rect_filled(
+            pin_chip,
+            8,
+            if on {
+                alpha(ACCENT, 36)
+            } else {
+                Color32::from_rgb(0x0e, 0x21, 0x35)
+            },
+        );
+        p.rect_stroke(
+            pin_chip,
+            8,
+            Stroke::new(
+                1.0,
+                if on || pin_resp.hovered() {
+                    ACCENT
+                } else {
+                    Color32::from_rgb(0x1b, 0x3f, 0x5c)
+                },
+            ),
+            StrokeKind::Inside,
+        );
+        p.text(
+            pin_chip.center(),
+            Align2::CENTER_CENTER,
+            "★ Pinned",
+            bold(10.5),
+            if on { ACCENT } else { MUTED },
+        );
+        if pin_resp.clicked() {
+            self.timeline.pinned_only = !on;
+        }
         let search_rect = Rect::from_min_max(
             Pos2::new(rect.left() + 16.0, rect.top() + 38.0),
             Pos2::new(rect.right() - 12.0, rect.top() + 66.0),
@@ -461,6 +502,7 @@ impl App {
         }
 
         let mut clicked: Option<String> = None;
+        let mut pin_clicked: Option<String> = None;
         let prev_by_id: std::collections::HashMap<String, Option<Snapshot>> = {
             let mut m = std::collections::HashMap::new();
             for (i, s) in self.timeline.chain.iter().enumerate() {
@@ -619,6 +661,38 @@ impl App {
                                 cx += w + 6.0;
                             }
                         }
+                        let star = Rect::from_center_size(
+                            Pos2::new(r.right() - 26.0, r.top() + 20.0),
+                            Vec2::splat(22.0),
+                        );
+                        let star_resp = ui.interact(
+                            star,
+                            ui.id().with(("pin", &snap.id)),
+                            Sense::click(),
+                        );
+                        p.text(
+                            star.center(),
+                            Align2::CENTER_CENTER,
+                            if snap.pinned { "★" } else { "☆" },
+                            icon(13.0),
+                            if snap.pinned {
+                                Color32::from_rgb(0xf2, 0xc4, 0x5f)
+                            } else if star_resp.hovered() {
+                                ACCENT
+                            } else {
+                                DIM
+                            },
+                        );
+                        if star_resp
+                            .on_hover_text(if snap.pinned {
+                                "Unpin this snapshot"
+                            } else {
+                                "Pin this snapshot"
+                            })
+                            .clicked()
+                        {
+                            pin_clicked = Some(snap.id.clone());
+                        }
                         p.text(
                             Pos2::new(r.right() - 14.0, meta_y + 2.0),
                             Align2::RIGHT_TOP,
@@ -635,6 +709,9 @@ impl App {
         });
         if let Some(sid) = clicked {
             self.select_snapshot(&sid);
+        }
+        if let Some(sid) = pin_clicked {
+            self.toggle_pin(&sid);
         }
     }
 
@@ -671,6 +748,54 @@ impl App {
             bold(19.0),
             TEXT,
         );
+        let pin_rect = Rect::from_center_size(
+            Pos2::new(head.right() - 34.0, head.top() + 24.0),
+            Vec2::new(34.0, 34.0),
+        );
+        let pin_resp = ui.interact(pin_rect, ui.id().with("pin_detail"), Sense::click());
+        p.rect_filled(
+            pin_rect,
+            9,
+            if pin_resp.hovered() {
+                Color32::from_rgb(0x14, 0x2c, 0x44)
+            } else {
+                Color32::from_rgb(0x0e, 0x21, 0x35)
+            },
+        );
+        p.rect_stroke(
+            pin_rect,
+            9,
+            Stroke::new(
+                1.0,
+                if snap.pinned {
+                    Color32::from_rgb(0x4a, 0x3d, 0x18)
+                } else {
+                    Color32::from_rgb(0x1b, 0x3f, 0x5c)
+                },
+            ),
+            StrokeKind::Inside,
+        );
+        p.text(
+            pin_rect.center(),
+            Align2::CENTER_CENTER,
+            if snap.pinned { "★" } else { "☆" },
+            icon(16.0),
+            if snap.pinned {
+                Color32::from_rgb(0xf2, 0xc4, 0x5f)
+            } else {
+                Color32::from_rgb(0xc8, 0xcc, 0xd4)
+            },
+        );
+        if pin_resp
+            .on_hover_text(if snap.pinned {
+                "Unpin this snapshot"
+            } else {
+                "Pin this snapshot"
+            })
+            .clicked()
+        {
+            self.toggle_pin(&snap.id);
+        }
         p.text(
             Pos2::new(head.left() + 18.0, head.top() + 38.0),
             Align2::LEFT_TOP,

@@ -13,6 +13,7 @@ enum Action {
     NewSnapshot { title: String, note: String },
     NewBranch { name: String, from: String },
     Restore { sid: String, whole: bool, rel: Option<String>, safety: bool },
+    ExportRestore(String),
     Delete(String),
 }
 
@@ -284,6 +285,7 @@ impl App {
                 let rel_opt = rel.clone();
                 let mut safety_val = *safety;
                 let mut write_clicked = false;
+                let mut export_clicked = false;
                 let delete_clicked = false;
                 modal(ctx, "dlg_restore", 580.0, |ui| {
                     heading(
@@ -382,6 +384,17 @@ impl App {
                         .font(bold(13.0))
                         .color(Color32::from_rgb(0xcf, 0xdf, 0xf0)),
                     );
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Not ready to touch the project?")
+                                .font(regular(12.0))
+                                .color(MUTED),
+                        );
+                        if button(ui, "Restore to a new folder…", Btn::Ghost, true).clicked() {
+                            export_clicked = true;
+                        }
+                    });
                     let (cancel, ok) = footer(ui, "Restore now", false);
                     if cancel {
                         close = true;
@@ -399,6 +412,10 @@ impl App {
                         rel: rel_opt.clone(),
                         safety: safety_val,
                     });
+                    close = true;
+                }
+                if export_clicked {
+                    action = Some(Action::ExportRestore(sid.clone()));
                     close = true;
                 }
             }
@@ -451,6 +468,7 @@ impl App {
                     self.complete_restore(&sid, whole, rel.as_deref(), safety)
                 }
                 Action::Delete(sid) => self.delete_snapshot(&sid),
+                Action::ExportRestore(sid) => self.export_restore(&sid),
             }
         } else if !close {
             self.dialog = Some(dlg);

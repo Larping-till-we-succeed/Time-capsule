@@ -78,6 +78,8 @@ pub struct Snapshot {
     pub count: usize,
     #[serde(default)]
     pub bytes: u64,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 impl Snapshot {
@@ -616,6 +618,7 @@ pub fn take_snapshot(
         parent: chain.last().map(|s| s.id.clone()),
         count: files.len(),
         bytes: total,
+        pinned: false,
         files,
     };
     let mut snaps = load_snapshots(pid);
@@ -663,6 +666,22 @@ pub fn delete_snapshot(pid: &str, sid: &str) {
         }
     }
     save_snapshots(pid, &rest);
+}
+
+pub fn toggle_pin(pid: &str, sid: &str) -> Option<bool> {
+    let mut snaps = load_snapshots(pid);
+    let mut value = None;
+    for s in snaps.iter_mut() {
+        if s.id == sid {
+            s.pinned = !s.pinned;
+            value = Some(s.pinned);
+            break;
+        }
+    }
+    if value.is_some() {
+        save_snapshots(pid, &snaps);
+    }
+    value
 }
 
 pub fn has_changes(pid: &str, branch: Option<&str>) -> bool {
@@ -1005,6 +1024,169 @@ pub fn restore(
         }
     }
     Ok((actions, created))
+}
+
+fn safe_rel_path(rel: &str) -> Option<PathBuf> {
+    let path = Path::new(rel);
+    if path.is_absolute() {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::Normal(name) => out.push(name),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    if out.as_os_str().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Write every file of a snapshot into `dest` (created if missing). The project
+/// folder itself is never touched, so this is a safe way to inspect an old state.
+pub fn restore_export(pid: &str, snap: &Snapshot, dest: &Path) -> Result<usize> {
+    fs::create_dir_all(dest)
+        .map_err(|e| StoreError(format!("Could not create {}: {}", dest.display(), e)))?;
+    let mut written = 0usize;
+    for (rel, info) in &snap.files {
+        let Some(rel_path) = safe_rel_path(rel) else { continue };
+        let target = dest.join(rel_path);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| StoreError(format!("Could not create {}: {}", parent.display(), e)))?;
+        }
+        let data = read_blob(pid, &info.h);
+        fs::write(&target, &data)
+            .map_err(|e| StoreError(format!("Could not write {}: {}", target.display(), e)))?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+// ------------------------------------------------------------------ maintenance
+
+#[derive(Debug, Clone, Default)]
+pub struct GcReport {
+    pub blobs: usize,
+    pub referenced: usize,
+    pub removed: usize,
+    pub freed: u64,
+    pub dry_run: bool,
+}
+
+fn blob_files(pid: &str) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(objects_dir(pid)) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Ok(inner) = fs::read_dir(&path) {
+                for blob in inner.flatten() {
+                    if blob.path().is_file() {
+                        out.push((
+                            blob.path(),
+                            blob.file_name().to_string_lossy().to_string(),
+                        ));
+                    }
+                }
+            }
+        } else if path.is_file() {
+            out.push((path, entry.file_name().to_string_lossy().to_string()));
+        }
+    }
+    out
+}
+
+pub fn gc_objects(pid: &str, dry_run: bool) -> Result<GcReport> {
+    let snaps = load_snapshots(pid);
+    let mut referenced: HashSet<String> = HashSet::new();
+    for snap in &snaps {
+        for info in snap.files.values() {
+            if !info.h.is_empty() {
+                referenced.insert(info.h.clone());
+            }
+        }
+    }
+    let mut report = GcReport {
+        referenced: referenced.len(),
+        dry_run,
+        ..Default::default()
+    };
+    for (path, name) in blob_files(pid) {
+        report.blobs += 1;
+        if referenced.contains(&name) {
+            continue;
+        }
+        let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if dry_run {
+            report.removed += 1;
+            report.freed += size;
+        } else if fs::remove_file(&path).is_ok() {
+            report.removed += 1;
+            report.freed += size;
+            if let Some(parent) = path.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
+    }
+    Ok(report)
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct VerifyReport {
+    pub referenced: usize,
+    pub present: usize,
+    pub missing: Vec<String>,
+    pub corrupt: Vec<String>,
+    pub unreferenced: usize,
+}
+
+/// Check every blob the snapshots point at: exists, and still hashes to its
+/// content address. Read-only; safe to run at any time.
+pub fn verify_store(pid: &str) -> VerifyReport {
+    let snaps = load_snapshots(pid);
+    let mut referenced: HashSet<String> = HashSet::new();
+    for snap in &snaps {
+        for info in snap.files.values() {
+            if !info.h.is_empty() {
+                referenced.insert(info.h.clone());
+            }
+        }
+    }
+    let files = blob_files(pid);
+    let mut report = VerifyReport {
+        referenced: referenced.len(),
+        unreferenced: files.iter().filter(|(_, n)| !referenced.contains(n)).count(),
+        ..Default::default()
+    };
+    for digest in &referenced {
+        let path = blob_path(pid, digest);
+        if !path.is_file() {
+            report.missing.push(digest.clone());
+            continue;
+        }
+        match fs::read(&path) {
+            Ok(data) => {
+                let mut hasher = Sha256::new();
+                hasher.update(&data);
+                if hex(&hasher.finalize()) == *digest {
+                    report.present += 1;
+                } else {
+                    report.corrupt.push(digest.clone());
+                }
+            }
+            Err(_) => report.missing.push(digest.clone()),
+        }
+    }
+    report.missing.sort();
+    report.corrupt.sort();
+    report
 }
 
 // ------------------------------------------------------------------------ stats
