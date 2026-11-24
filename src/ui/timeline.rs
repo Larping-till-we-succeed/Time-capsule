@@ -511,12 +511,11 @@ impl App {
             m
         };
         let points = self.branch_points();
-        let mut row_y = list.top();
         common::area(ui, list, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("history")
                 .auto_shrink([false, false])
-                .show(ui, |ui| {
+                .show_viewport(ui, |ui, viewport| {
                     if shown.is_empty() {
                         ui.add_space(28.0);
                         ui.label(
@@ -526,32 +525,49 @@ impl App {
                         );
                         return;
                     }
+                    // Lay out every row first, then draw only those in the viewport, so
+                    // thousands of snapshots scroll as cheaply as a handful.
+                    let mut rows: Vec<(usize, f32, bool)> = Vec::with_capacity(shown.len());
+                    let mut total = 0.0f32;
                     let mut last_day: Option<String> = None;
-                    let width = ui.available_width();
-                    for snap in &shown {
+                    for (i, snap) in shown.iter().enumerate() {
                         let day = store::day_key(snap.ts);
-                        if last_day.as_deref() != Some(day.as_str()) {
-                            ui.add_space(10.0);
-                            let (r, _) = ui.allocate_exact_size(
-                                Vec2::new(width, 20.0),
-                                Sense::hover(),
-                            );
-                            ui.painter().text(
-                                Pos2::new(r.left() + 40.0, r.center().y),
+                        let header = last_day.as_deref() != Some(day.as_str());
+                        if header {
+                            total += 10.0;
+                        }
+                        rows.push((i, total, header));
+                        total += (if header { 20.0 } else { 0.0 }) + 86.0 + 6.0;
+                        last_day = Some(day);
+                    }
+                    let width = ui.available_width();
+                    let (area, _) = ui.allocate_exact_size(Vec2::new(width, total), Sense::hover());
+                    let origin = area.min;
+                    let clip = ui.clip_rect().intersect(rect);
+                    for (index, top, header) in rows {
+                        if top + 112.0 < viewport.min.y || top > viewport.max.y {
+                            continue;
+                        }
+                        let snap = &shown[index];
+                        let __painter = ui.painter().with_clip_rect(clip);
+                        let p = &__painter;
+                        if header {
+                            p.text(
+                                Pos2::new(origin.x + 40.0, origin.y + top + 20.0),
                                 Align2::LEFT_CENTER,
                                 store::day_label(snap.ts).to_uppercase(),
                                 bold(10.0),
                                 Color32::from_rgb(0x6f, 0x8a, 0xa6),
                             );
-                            last_day = Some(day);
                         }
-                        let (r, response) = ui.allocate_exact_size(
+                        let row_top = origin.y + top + if header { 20.0 } else { 0.0 };
+                        let r = Rect::from_min_size(
+                            Pos2::new(origin.x, row_top),
                             Vec2::new(width, 86.0),
-                            Sense::click(),
                         );
+                        let response =
+                            ui.interact(r, ui.id().with(("row", &snap.id)), Sense::click());
                         let selected = self.timeline.selected.as_deref() == Some(snap.id.as_str());
-                        let __painter = ui.painter().with_clip_rect(rect);
-    let p = &__painter;
                         if selected {
                             p.rect_filled(r, egui::CornerRadius::same(10), Color32::from_rgb(0x10, 0x29, 0x3f));
                             p.rect_stroke(
@@ -704,7 +720,6 @@ impl App {
                             clicked = Some(snap.id.clone());
                         }
                     }
-                    ui.add_space(row_y * 0.0 + 6.0);
                 });
         });
         if let Some(sid) = clicked {

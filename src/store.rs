@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Local, TimeZone, Timelike};
@@ -46,12 +47,64 @@ fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(StoreError(msg.into()))
 }
 
+pub const CANCELLED: &str = "Cancelled.";
+
+/// Shared progress/stop flag for work that runs off the UI thread.
+#[derive(Clone, Default)]
+pub struct Progress {
+    inner: Arc<ProgressInner>,
+}
+
+#[derive(Default)]
+struct ProgressInner {
+    cancelled: AtomicBool,
+    done: AtomicUsize,
+    total: AtomicUsize,
+}
+
+impl Progress {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.inner.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.inner.cancelled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_total(&self, total: usize) {
+        self.inner.total.store(total, Ordering::Relaxed);
+    }
+
+    pub fn tick(&self) {
+        self.inner.done.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn counts(&self) -> (usize, usize) {
+        (
+            self.inner.done.load(Ordering::Relaxed),
+            self.inner.total.load(Ordering::Relaxed),
+        )
+    }
+}
+
+fn aborted(progress: Option<&Progress>) -> bool {
+    progress.map(|p| p.cancelled()).unwrap_or(false)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct FileInfo {
     #[serde(default)]
     pub h: String,
     #[serde(default)]
     pub size: u64,
+    /// Modification time in nanoseconds, used to skip re-hashing unchanged files.
+    /// Unknown to the Python version, which ignores extra JSON fields.
+    #[serde(default)]
+    pub m: i64,
 }
 
 pub type FileMap = BTreeMap<String, FileInfo>;
@@ -456,7 +509,15 @@ fn file_ext(name: &str) -> String {
     }
 }
 
-pub fn scan_project(path: &Path) -> Vec<(String, PathBuf, u64)> {
+fn mtime_ns(meta: &fs::Metadata) -> i64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+pub fn scan_project(path: &Path) -> Vec<(String, PathBuf, u64, i64)> {
     let cfg = settings();
     let extra: Vec<String> = cfg
         .extra_ignore
@@ -505,7 +566,7 @@ pub fn scan_project(path: &Path) -> Vec<(String, PathBuf, u64)> {
             Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };
-        found.push((rel, ap, size));
+        found.push((rel, ap, size, mtime_ns(&meta)));
         if found.len() >= MAX_FILES {
             break;
         }
@@ -513,7 +574,15 @@ pub fn scan_project(path: &Path) -> Vec<(String, PathBuf, u64)> {
     found
 }
 
-fn collect(pid: &str, store_objects: bool) -> Result<(FileMap, u64)> {
+/// Read the project folder. `hints` are the files of the previous snapshot on
+/// this branch: when size and mtime still match, the stored digest is reused
+/// instead of reading and hashing the file again.
+fn collect(
+    pid: &str,
+    store_objects: bool,
+    hints: Option<&FileMap>,
+    progress: Option<&Progress>,
+) -> Result<(FileMap, u64)> {
     let proj = get_project(pid).ok_or_else(|| StoreError("Unknown project.".into()))?;
     let path = PathBuf::from(&proj.path);
     if !path.is_dir() {
@@ -522,27 +591,62 @@ fn collect(pid: &str, store_objects: bool) -> Result<(FileMap, u64)> {
     let mut files = FileMap::new();
     let mut total = 0u64;
     let objects = objects_dir(pid);
-    for (rel, ap, _size) in scan_project(&path) {
-        let data = match fs::read(&ap) {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-        let mut hasher = Sha256::new();
-        hasher.update(&data);
-        let digest = hex(&hasher.finalize());
-        if store_objects {
-            let blob = objects.join(&digest[..2]).join(&digest);
-            if !blob.exists() {
-                if let Some(parent) = blob.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-                let _ = fs::write(&blob, &data);
-            }
+    let scanned = scan_project(&path);
+    if let Some(p) = progress {
+        p.set_total(scanned.len());
+    }
+    for (rel, ap, size, mtime) in scanned {
+        if aborted(progress) {
+            return err(CANCELLED);
         }
-        total += data.len() as u64;
-        files.insert(rel, FileInfo { h: digest, size: data.len() as u64 });
+        let reused = hints
+            .and_then(|h| h.get(&rel))
+            .filter(|prev| {
+                !prev.h.is_empty()
+                    && prev.size == size
+                    && mtime != 0
+                    && prev.m == mtime
+                    && (!store_objects || objects.join(&prev.h[..2]).join(&prev.h).is_file())
+            })
+            .map(|prev| prev.h.clone());
+        let (digest, len) = match reused {
+            Some(digest) => (digest, size),
+            None => {
+                let data = match fs::read(&ap) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let mut hasher = Sha256::new();
+                hasher.update(&data);
+                let digest = hex(&hasher.finalize());
+                if store_objects {
+                    let blob = objects.join(&digest[..2]).join(&digest);
+                    if !blob.exists() {
+                        if let Some(parent) = blob.parent() {
+                            let _ = fs::create_dir_all(parent);
+                        }
+                        let _ = fs::write(&blob, &data);
+                    }
+                }
+                (digest, data.len() as u64)
+            }
+        };
+        total += len;
+        files.insert(rel, FileInfo { h: digest, size: len, m: mtime });
+        if let Some(p) = progress {
+            p.tick();
+        }
     }
     Ok((files, total))
+}
+
+fn same_files(a: &FileMap, b: &FileMap) -> bool {
+    a.len() == b.len()
+        && a.iter().all(|(k, v)| {
+            b.get(k)
+                .map(|o| o.h == v.h && o.size == v.size)
+                .unwrap_or(false)
+        })
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -600,14 +704,26 @@ pub fn take_snapshot(
     kind: &str,
     branch: Option<&str>,
 ) -> Result<Snapshot> {
-    let (files, total) = collect(pid, true)?;
-    if files.is_empty() {
-        return err("Nothing to capture: no trackable files were found.");
-    }
+    take_snapshot_ctl(pid, note, title, kind, branch, None)
+}
+
+pub fn take_snapshot_ctl(
+    pid: &str,
+    note: &str,
+    title: &str,
+    kind: &str,
+    branch: Option<&str>,
+    progress: Option<&Progress>,
+) -> Result<Snapshot> {
     let bid = branch
         .map(|b| b.to_string())
         .unwrap_or_else(|| active_branch(pid));
     let chain = branch_chain(pid, Some(&bid));
+    let hints = chain.last().map(|s| s.files.clone());
+    let (files, total) = collect(pid, true, hints.as_ref(), progress)?;
+    if files.is_empty() {
+        return err("Nothing to capture: no trackable files were found.");
+    }
     let snap = Snapshot {
         id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
         ts: now(),
@@ -692,8 +808,8 @@ pub fn has_changes(pid: &str, branch: Option<&str>) -> bool {
     if chain.is_empty() {
         return true;
     }
-    match collect(pid, false) {
-        Ok((current, _)) => current != chain.last().unwrap().files,
+    match collect(pid, false, Some(&chain.last().unwrap().files), None) {
+        Ok((current, _)) => !same_files(&current, &chain.last().unwrap().files),
         Err(_) => false,
     }
 }
@@ -938,7 +1054,8 @@ pub fn ordered_changes(d: &Diff) -> Vec<(String, &'static str)> {
 // ---------------------------------------------------------------------- restore
 
 pub fn preview_restore(pid: &str, snap: &Snapshot) -> Result<(Vec<String>, Vec<String>)> {
-    let (current, _) = collect(pid, false)?;
+    let hints = branch_chain(pid, None).last().map(|s| s.files.clone());
+    let (current, _) = collect(pid, false, hints.as_ref(), None)?;
     let mut write: Vec<String> = snap
         .files
         .iter()
@@ -968,7 +1085,7 @@ pub fn restore(
         return err(format!("The project folder is missing:\n{}", proj.path));
     }
     let mut created = None;
-    if safety && whole {
+    if safety {
         created = take_snapshot(
             pid,
             "Safety copy before restoring an earlier snapshot",
@@ -1004,15 +1121,12 @@ pub fn restore(
             }
         }
         let data = read_blob(pid, &info.h);
-        if let Some(parent) = dest.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if fs::write(&dest, &data).is_ok() {
+        if write_atomic(&dest, &data).is_ok() {
             actions.push(("restored".to_string(), rel));
         }
     }
     if whole {
-        if let Ok((current, _)) = collect(pid, false) {
+        if let Ok((current, _)) = collect(pid, false, None, None) {
             for rel in current.keys() {
                 if !snap.files.contains_key(rel) {
                     let p = path.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -1024,6 +1138,27 @@ pub fn restore(
         }
     }
     Ok((actions, created))
+}
+
+/// Write next to the target and rename, so an interrupted restore never leaves
+/// a half written file behind.
+fn write_atomic(dest: &Path, data: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = PathBuf::from(format!("{}.tc-restore", dest.display()));
+    {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(data)?;
+        file.flush()?;
+    }
+    match fs::rename(&tmp, dest) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
 }
 
 fn safe_rel_path(rel: &str) -> Option<PathBuf> {
@@ -1104,6 +1239,14 @@ fn blob_files(pid: &str) -> Vec<(PathBuf, String)> {
 }
 
 pub fn gc_objects(pid: &str, dry_run: bool) -> Result<GcReport> {
+    gc_objects_ctl(pid, dry_run, None)
+}
+
+pub fn gc_objects_ctl(
+    pid: &str,
+    dry_run: bool,
+    progress: Option<&Progress>,
+) -> Result<GcReport> {
     let snaps = load_snapshots(pid);
     let mut referenced: HashSet<String> = HashSet::new();
     for snap in &snaps {
@@ -1118,7 +1261,17 @@ pub fn gc_objects(pid: &str, dry_run: bool) -> Result<GcReport> {
         dry_run,
         ..Default::default()
     };
-    for (path, name) in blob_files(pid) {
+    let blobs = blob_files(pid);
+    if let Some(p) = progress {
+        p.set_total(blobs.len());
+    }
+    for (path, name) in blobs {
+        if aborted(progress) {
+            break;
+        }
+        if let Some(p) = progress {
+            p.tick();
+        }
         report.blobs += 1;
         if referenced.contains(&name) {
             continue;
@@ -1150,6 +1303,10 @@ pub struct VerifyReport {
 /// Check every blob the snapshots point at: exists, and still hashes to its
 /// content address. Read-only; safe to run at any time.
 pub fn verify_store(pid: &str) -> VerifyReport {
+    verify_store_ctl(pid, None)
+}
+
+pub fn verify_store_ctl(pid: &str, progress: Option<&Progress>) -> VerifyReport {
     let snaps = load_snapshots(pid);
     let mut referenced: HashSet<String> = HashSet::new();
     for snap in &snaps {
@@ -1165,7 +1322,16 @@ pub fn verify_store(pid: &str) -> VerifyReport {
         unreferenced: files.iter().filter(|(_, n)| !referenced.contains(n)).count(),
         ..Default::default()
     };
+    if let Some(p) = progress {
+        p.set_total(referenced.len());
+    }
     for digest in &referenced {
+        if aborted(progress) {
+            break;
+        }
+        if let Some(p) = progress {
+            p.tick();
+        }
         let path = blob_path(pid, digest);
         if !path.is_file() {
             report.missing.push(digest.clone());
@@ -1200,7 +1366,8 @@ pub fn project_stats(pid: &str, branch: Option<&str>) -> ProjectStats {
     let mut live = FileMap::new();
     if let Some(p) = &proj {
         if Path::new(&p.path).is_dir() {
-            if let Ok((files, _)) = collect(pid, false) {
+            let hints = snaps.last().map(|s| s.files.clone());
+            if let Ok((files, _)) = collect(pid, false, hints.as_ref(), None) {
                 live = files;
             }
         }

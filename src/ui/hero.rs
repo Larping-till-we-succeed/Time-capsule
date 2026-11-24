@@ -355,13 +355,18 @@ impl App {
         );
         let ui = &mut child;
         ui.spacing_mut().item_spacing = Vec2::new(10.0, 0.0);
+        let busy = self.busy();
         ui.painter().circle_filled(
             Pos2::new(ui.min_rect().left() + 4.0, rect.center().y),
             4.0,
-            GREEN,
+            if busy { ACCENT } else { GREEN },
         );
         ui.add_space(14.0);
-        ui.label(egui::RichText::new("Ready").font(bold(12.0)).color(Color32::from_rgb(0xd7, 0xe8, 0xf8)));
+        ui.label(
+            egui::RichText::new(if busy { "Working" } else { "Ready" })
+                .font(bold(12.0))
+                .color(Color32::from_rgb(0xd7, 0xe8, 0xf8)),
+        );
         ui.add_space(16.0);
         ui.label(egui::RichText::new("Auto snapshots:").font(regular(12.0)).color(MUTED));
         if common::toggle(ui, self.auto.enabled).clicked() {
@@ -391,6 +396,24 @@ impl App {
             }
         };
         ui.label(egui::RichText::new(next).font(regular(12.0)).color(MUTED));
+
+        let running = self.task.as_ref().map(|task| {
+            let (done, total) = task.counts();
+            (task.label.clone(), done, total)
+        });
+        if let Some((label, done, total)) = running {
+            ui.add_space(14.0);
+            let glyph = ["◐", "◓", "◑", "◒"][((store::now() * 4.0) as usize) % 4];
+            let text = if total > 0 {
+                format!("{} {} · {}/{}", glyph, label, done, total)
+            } else {
+                format!("{} {}", glyph, label)
+            };
+            ui.label(egui::RichText::new(text).font(bold(12.0)).color(ACCENT));
+            if button(ui, "Cancel", Btn::Ghost, true).clicked() {
+                self.cancel_task();
+            }
+        }
 
         // right side
         let right = ui.available_rect_before_wrap().right();

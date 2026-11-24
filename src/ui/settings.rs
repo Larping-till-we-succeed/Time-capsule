@@ -152,7 +152,7 @@ impl App {
             MUTED,
         );
 
-        let has_project = self.pid.is_some();
+        let has_project = self.pid.is_some() && !self.busy();
         let check_rect = Rect::from_min_size(
             Pos2::new(maint.left() + 20.0, maint.top() + 94.0),
             Vec2::new(148.0, 32.0),
@@ -181,8 +181,11 @@ impl App {
         });
         if check_clicked {
             if let Some(pid) = self.pid.clone() {
-                self.verify_report = Some(store::verify_store(&pid));
+                self.verify_report = None;
                 self.gc_preview = None;
+                self.spawn_task("Checking object store", move |progress| {
+                    crate::TaskOutcome::Verify(store::verify_store_ctl(&pid, Some(progress)))
+                });
             }
         }
         if scan_clicked {
@@ -192,21 +195,17 @@ impl App {
                     .as_ref()
                     .map(|r| !(r.dry_run && r.removed > 0))
                     .unwrap_or(true);
-                if let Ok(report) = store::gc_objects(&pid, dry) {
-                    if !dry {
-                        self.notify(
-                            "Storage cleaned up",
-                            format!(
-                                "Removed {} unused blob{} and freed {}.",
-                                report.removed,
-                                if report.removed == 1 { "" } else { "s" },
-                                store::fmt_bytes(report.freed)
-                            ),
-                        );
-                        self.verify_report = None;
-                    }
-                    self.gc_preview = Some(report);
-                }
+                self.spawn_task(
+                    if dry {
+                        "Scanning for unused files"
+                    } else {
+                        "Removing unused files"
+                    },
+                    move |progress| crate::TaskOutcome::Gc {
+                        dry_run: dry,
+                        result: store::gc_objects_ctl(&pid, dry, Some(progress)),
+                    },
+                );
             }
         }
 

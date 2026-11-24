@@ -1,5 +1,6 @@
 //! TimeCapsule 0.0 — a time machine for project folders, in Rust.
 
+mod cli;
 mod diff;
 mod preview;
 mod store;
@@ -7,6 +8,7 @@ mod theme;
 mod ui;
 
 use std::collections::HashMap;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use eframe::egui;
@@ -151,6 +153,32 @@ pub enum Dialog {
     },
 }
 
+pub enum TaskOutcome {
+    Snapshot {
+        pid: String,
+        result: store::Result<Snapshot>,
+    },
+    Gc {
+        dry_run: bool,
+        result: store::Result<store::GcReport>,
+    },
+    Verify(store::VerifyReport),
+}
+
+/// A job running on a worker thread; the UI keeps drawing while it works.
+pub struct Task {
+    pub label: String,
+    pub progress: store::Progress,
+    rx: Receiver<TaskOutcome>,
+    pub started: f64,
+}
+
+impl Task {
+    pub fn counts(&self) -> (usize, usize) {
+        self.progress.counts()
+    }
+}
+
 pub struct App {
     pub page: Page,
     pub projects: Vec<Project>,
@@ -176,6 +204,7 @@ pub struct App {
     pub status_storage: (u64, u64),
     pub gc_preview: Option<store::GcReport>,
     pub verify_report: Option<store::VerifyReport>,
+    pub task: Option<Task>,
 }
 
 impl App {
@@ -213,6 +242,7 @@ impl App {
             status_storage: (0, 0),
             gc_preview: None,
             verify_report: None,
+            task: None,
         };
         app.reset_autosave_clock();
         app.refresh(None);
@@ -530,6 +560,113 @@ impl App {
         self.toast = Some((title.to_string(), text.into(), store::now() + 3.0));
     }
 
+    // ------------------------------------------------------------- background
+    pub fn busy(&self) -> bool {
+        self.task.is_some()
+    }
+
+    fn spawn_task(
+        &mut self,
+        label: impl Into<String>,
+        work: impl FnOnce(&store::Progress) -> TaskOutcome + Send + 'static,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let progress = store::Progress::new();
+        let worker = progress.clone();
+        std::thread::spawn(move || {
+            let outcome = work(&worker);
+            let _ = tx.send(outcome);
+        });
+        self.task = Some(Task {
+            label: label.into(),
+            progress,
+            rx,
+            started: store::now(),
+        });
+    }
+
+    pub fn cancel_task(&mut self) {
+        if let Some(task) = &self.task {
+            task.progress.cancel();
+        }
+        self.task = None;
+        self.notify(
+            "Cancelled",
+            "The background job stopped. Anything it had not finished was left untouched.",
+        );
+    }
+
+    pub fn poll_task(&mut self) {
+        let received = self.task.as_ref().and_then(|task| match task.rx.try_recv() {
+            Ok(outcome) => Some(Ok(outcome)),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(())),
+        });
+        match received {
+            Some(Ok(outcome)) => {
+                self.task = None;
+                self.handle_task(outcome);
+            }
+            Some(Err(())) => self.task = None,
+            None => {}
+        }
+    }
+
+    fn handle_task(&mut self, outcome: TaskOutcome) {
+        match outcome {
+            TaskOutcome::Snapshot { result, .. } => match result {
+                Ok(snap) => {
+                    self.page = Page::Timeline;
+                    self.refresh(Some(snap.id));
+                    self.notify(
+                        "Snapshot captured",
+                        format!(
+                            "{} files · {}",
+                            snap.count,
+                            store::fmt_bytes(snap.bytes)
+                        ),
+                    );
+                }
+                Err(e) => {
+                    let text = e.to_string();
+                    if text != store::CANCELLED {
+                        self.dialog = Some(Dialog::Message {
+                            title: "TimeCapsule".into(),
+                            text,
+                        });
+                    }
+                }
+            },
+            TaskOutcome::Gc { dry_run, result } => match result {
+                Ok(report) => {
+                    if !dry_run {
+                        self.verify_report = None;
+                        self.notify(
+                            "Storage cleaned up",
+                            format!(
+                                "Removed {} unused blob{} and freed {}.",
+                                report.removed,
+                                if report.removed == 1 { "" } else { "s" },
+                                store::fmt_bytes(report.freed)
+                            ),
+                        );
+                    }
+                    self.gc_preview = Some(report);
+                }
+                Err(e) => {
+                    let text = e.to_string();
+                    if text != store::CANCELLED {
+                        self.notify("Storage maintenance", text);
+                    }
+                }
+            },
+            TaskOutcome::Verify(report) => {
+                self.verify_report = Some(report);
+                self.gc_preview = None;
+            }
+        }
+    }
+
     pub fn toggle_pin(&mut self, sid: &str) {
         let Some(pid) = self.pid.clone() else { return };
         let Some(pinned) = store::toggle_pin(&pid, sid) else { return };
@@ -729,7 +866,7 @@ impl App {
 
     pub fn autosave_tick(&mut self) {
         let now = store::now();
-        if !self.auto.enabled {
+        if !self.auto.enabled || self.busy() {
             return;
         }
         if let Some(deadline) = self.auto_deadline {
@@ -785,20 +922,32 @@ impl App {
     }
 
     pub fn capture_snapshot(&mut self, title: &str, note: &str) {
+        if self.busy() {
+            self.notify(
+                "Still working",
+                "Wait for the current job to finish, or cancel it in the status bar.",
+            );
+            return;
+        }
         let Some(pid) = self.pid.clone() else { return };
         let branch = self.branch.clone();
-        match store::take_snapshot(&pid, note, title, "manual", Some(&branch)) {
-            Ok(snap) => {
-                self.page = Page::Timeline;
-                self.refresh(Some(snap.id));
-            }
-            Err(e) => {
-                self.dialog = Some(Dialog::Message {
-                    title: "TimeCapsule".into(),
-                    text: e.to_string(),
-                });
-            }
-        }
+        let title = title.to_string();
+        let note = note.to_string();
+        let name = self
+            .project()
+            .map(|p| p.name)
+            .unwrap_or_else(|| "project".into());
+        self.spawn_task(format!("Capturing {}", name), move |progress| {
+            let result = store::take_snapshot_ctl(
+                &pid,
+                &note,
+                &title,
+                "manual",
+                Some(&branch),
+                Some(progress),
+            );
+            TaskOutcome::Snapshot { pid, result }
+        });
     }
 
     pub fn compare_latest(&mut self) {
@@ -1052,13 +1201,18 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_shortcuts(ctx);
+        self.poll_task();
         self.autosave_tick();
         if let Some((_, _, until)) = &self.toast {
             if store::now() > *until {
                 self.toast = None;
             }
         }
-        ctx.request_repaint_after(Duration::from_secs(1));
+        ctx.request_repaint_after(if self.busy() {
+            Duration::from_millis(150)
+        } else {
+            Duration::from_secs(1)
+        });
 
         // Background: a deep space gradient across the whole window.
         let screen = ctx.screen_rect();
@@ -1140,6 +1294,10 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        std::process::exit(cli::run(&args));
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 900.0])
