@@ -1,8 +1,6 @@
 //! The banner at the top: planet limb, glowing brand, search and actions.
 
-use egui::{
-    Align2, Color32, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Vec2,
-};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use crate::store;
 use crate::theme::*;
@@ -10,222 +8,140 @@ use crate::App;
 
 use super::common;
 
-fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
-    let t = t.clamp(0.0, 1.0);
-    Color32::from_rgb(
-        (a.r() as f32 + (b.r() as f32 - a.r() as f32) * t) as u8,
-        (a.g() as f32 + (b.g() as f32 - a.g() as f32) * t) as u8,
-        (a.b() as f32 + (b.b() as f32 - a.b() as f32) * t) as u8,
-    )
-}
-
-fn globe_color(dist: f32, radius: f32) -> Color32 {
-    let t = (dist / (radius * 1.5)).clamp(0.0, 1.0);
-    let stops = [
-        (0.0, Color32::from_rgb(0x1d, 0x51, 0x73)),
-        (0.30, Color32::from_rgb(0x0f, 0x2e, 0x45)),
-        (0.62, Color32::from_rgb(0x08, 0x19, 0x27)),
-        (1.0, Color32::from_rgb(0x04, 0x0b, 0x13)),
-    ];
-    for w in stops.windows(2) {
-        if t <= w[1].0 {
-            let span = w[1].0 - w[0].0;
-            let f = if span > 0.0 { (t - w[0].0) / span } else { 0.0 };
-            return lerp_color(w[0].1, w[1].1, f);
-        }
-    }
-    stops[3].1
-}
-
-fn paint_planet(painter: &egui::Painter, rect: Rect) {
-    let w = rect.width();
-    let h = rect.height();
-    let radius = w * 0.78;
-    let cx = rect.left() + w * 1.24;
-    let cy = rect.top() + h * 1.08 - radius;
-    let center = Pos2::new(cx, cy);
-    let glow = Pos2::new(cx - radius * 0.55, cy + radius * 1.05);
-    painter.circle_filled(glow, radius * 0.9, alpha(ACCENT, 22));
-
-    let gradient_center = Pos2::new(cx - radius * 0.8, cy + radius * 1.25);
-    let rings = 10;
-    let segs = 96;
-    let mut mesh = Mesh::default();
-    let uv = egui::epaint::WHITE_UV;
-    for ring in 0..=rings {
-        let rr = radius * ring as f32 / rings as f32;
-        for s in 0..=segs {
-            let a = s as f32 / segs as f32 * std::f32::consts::TAU;
-            let pos = center + Vec2::new(a.cos(), a.sin()) * rr;
-            let dist = (pos - gradient_center).length();
-            mesh.vertices.push(egui::epaint::Vertex {
-                pos,
-                uv,
-                color: globe_color(dist, radius),
-            });
-        }
-    }
-    let row = (segs + 1) as u32;
-    for ring in 0..rings {
-        for s in 0..segs {
-            let i = ring * row + s;
-            mesh.indices.extend_from_slice(&[i, i + row, i + 1, i + 1, i + row, i + row + 1]);
-        }
-    }
-    painter.add(Shape::mesh(mesh));
-
-    painter.circle_stroke(
-        center,
-        radius - 1.5,
-        Stroke::new(2.0, Color32::from_rgba_unmultiplied(120, 214, 255, 120)),
-    );
-    painter.circle_stroke(center, radius + 5.0, Stroke::new(9.0, alpha(ACCENT, 46)));
-    painter.circle_stroke(center, radius + 16.0, Stroke::new(22.0, alpha(ACCENT, 22)));
-}
-
 impl App {
     pub fn ui_hero(&mut self, ui: &mut egui::Ui) {
         let width = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 134.0), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 62.0), Sense::hover());
         let __painter = ui.painter().clone();
-    let p = &__painter;
+        let p = &__painter;
 
-        let mut clip = p.with_clip_rect(rect);
-        gradient_rect(
-            &clip,
-            rect,
-            Color32::from_rgb(0x07, 0x16, 0x24),
-            Color32::from_rgb(0x05, 0x0e, 0x19),
-        );
-        // stars
-        let mut seed: u64 = 1337;
-        for i in 0..90 {
-            seed = (seed.wrapping_mul(1103515245).wrapping_add(12345)) & 0x7FFF_FFFF;
-            let x = rect.left() + (seed >> 7) as f32 % width.max(1.0);
-            let y = rect.top() + (seed >> 3) as f32 % (134.0 * 0.8);
-            let a = (26 + (seed >> 11) % 90) as u8;
-            clip.circle_filled(
-                Pos2::new(x, y),
-                if i % 5 == 0 { 1.2 } else { 0.7 },
-                Color32::from_rgba_unmultiplied(255, 255, 255, a),
+        // menu button
+        let menu_rect =
+            Rect::from_min_size(Pos2::new(rect.left(), rect.top() + 13.0), Vec2::splat(36.0));
+        let menu = ui.interact(menu_rect, ui.id().with("menu"), Sense::click());
+        if menu.hovered() {
+            p.rect_filled(menu_rect, 9, SURF2);
+        }
+        let cx = menu_rect.center().x;
+        let cy = menu_rect.center().y;
+        for i in 0..3 {
+            let y = cy - 6.0 + i as f32 * 6.0;
+            p.line_segment(
+                [Pos2::new(cx - 8.0, y), Pos2::new(cx + 8.0, y)],
+                Stroke::new(1.7, if menu.hovered() { TEXT } else { MUTED }),
             );
         }
-        paint_planet(&clip, rect);
-        clip.rect_stroke(
-            rect,
-            18,
-            Stroke::new(1.0, Color32::from_rgb(0x12, 0x30, 0x49)),
-            StrokeKind::Inside,
-        );
-
-        let cy = rect.center().y;
-        let logo = Rect::from_center_size(Pos2::new(rect.left() + 54.0, cy), Vec2::splat(56.0));
-        common::clock_logo(ui.painter(), logo);
-        ui.painter().text(
-            Pos2::new(rect.left() + 98.0, cy - 30.0),
-            Align2::LEFT_TOP,
-            "TimeCapsule",
-            bold(27.0),
-            Color32::from_rgb(0xf4, 0xf9, 0xff),
-        );
-        ui.painter().text(
-            Pos2::new(rect.left() + 98.0, cy + 5.0),
-            Align2::LEFT_TOP,
-            "Your digital time machine.",
-            regular(13.0),
-            Color32::from_rgb(0x9d, 0xb4, 0xcd),
-        );
-
-        // right aligned controls, shrinking gracefully on narrow windows
-        let right = rect.right() - 20.0;
-        let btn_w = 150.0;
-        let snap_w = 164.0;
-        let x_snap = right - snap_w;
-        let mut x_proj = x_snap - 10.0 - btn_w;
-        let title_end = rect.left() + 300.0;
-        let show_project_btn = x_proj - 16.0 - title_end >= 190.0;
-        if !show_project_btn {
-            x_proj = x_snap - 10.0;
+        if menu.on_hover_text("Toggle navigation · Ctrl + B").clicked() {
+            self.sidebar_open = !self.sidebar_open;
         }
-        let search_left = title_end;
-        let search_w = (x_proj - 16.0 - search_left).clamp(130.0, 330.0);
-        let search_rect = Rect::from_min_size(
-            Pos2::new(search_left, cy - 21.0),
-            Vec2::new(search_w, 42.0),
-        );
 
-        let proj_rect = Rect::from_min_size(Pos2::new(x_proj, cy - 20.0), Vec2::new(btn_w, 40.0));
-        let snap_rect = Rect::from_min_size(Pos2::new(x_snap, cy - 20.0), Vec2::new(snap_w, 40.0));
-
-        let mut new_project = false;
-        if show_project_btn {
-            common::area(ui, proj_rect, |ui| {
-                if button(ui, "＋  New project", Btn::Ghost, true).clicked() {
-                    new_project = true;
-                }
-            });
+        // page title, with the project it belongs to
+        let title = self.page_title();
+        let galley = p.layout_no_wrap(title.to_string(), bold(23.0), TEXT);
+        let title_pos = Pos2::new(rect.left() + 48.0, rect.center().y - galley.size().y * 0.5);
+        p.galley(title_pos, galley.clone(), TEXT);
+        let after_title = title_pos.x + galley.size().x + 12.0;
+        if let Some(proj) = self.project() {
+            let sub = format!("·  {}", proj.name);
+            let sub_galley = p.layout_no_wrap(sub, regular(12.5), MUTED);
+            if after_title + sub_galley.size().x < rect.right() - 600.0 {
+                p.galley(
+                    Pos2::new(after_title, rect.center().y - sub_galley.size().y * 0.5),
+                    sub_galley,
+                    MUTED,
+                );
+            }
         }
+
+        // right side: settings, new snapshot, new project, search
+        let gear_rect = Rect::from_min_size(
+            Pos2::new(rect.right() - 36.0, rect.top() + 13.0),
+            Vec2::splat(36.0),
+        );
+        let gear = ui.interact(gear_rect, ui.id().with("top_gear"), Sense::click());
+        if gear.hovered() {
+            p.rect_filled(gear_rect, 9, SURF2);
+        }
+        p.text(
+            gear_rect.center(),
+            Align2::CENTER_CENTER,
+            "⚙",
+            icon(15.0),
+            if gear.hovered() { TEXT } else { MUTED },
+        );
+        if gear.on_hover_text("Settings").clicked() {
+            self.select_page(crate::Page::Settings);
+        }
+
+        let snap_w = 152.0;
+        let snap_rect = Rect::from_min_size(
+            Pos2::new(gear_rect.left() - 10.0 - snap_w, rect.top() + 15.0),
+            Vec2::new(snap_w, 34.0),
+        );
         let mut new_snap = false;
         common::area(ui, snap_rect, |ui| {
             if button(ui, "＋  New snapshot", Btn::Primary, self.pid.is_some()).clicked() {
                 new_snap = true;
             }
         });
-        if new_project {
-            self.dialog_new_project();
-        }
         if new_snap {
             self.dialog_new_snapshot();
         }
 
-        // search box
-        ui.painter().rect_filled(
-            search_rect,
-            11,
-            Color32::from_rgb(0x07, 0x13, 0x1f),
+        let proj_w = 128.0;
+        let proj_rect = Rect::from_min_size(
+            Pos2::new(snap_rect.left() - 8.0 - proj_w, rect.top() + 15.0),
+            Vec2::new(proj_w, 34.0),
         );
-        ui.painter().rect_stroke(
-            search_rect,
-            11,
-            Stroke::new(1.0, Color32::from_rgb(0x15, 0x33, 0x4e)),
-            StrokeKind::Inside,
+        let show_proj = proj_rect.left() - (rect.left() + 320.0) > 110.0;
+        let mut new_project = false;
+        if show_proj {
+            common::area(ui, proj_rect, |ui| {
+                if button(ui, "＋  Project", Btn::Ghost, true).clicked() {
+                    new_project = true;
+                }
+            });
+        }
+        if new_project {
+            self.dialog_new_project();
+        }
+
+        let search_right = if show_proj {
+            proj_rect.left() - 10.0
+        } else {
+            snap_rect.left() - 10.0
+        };
+        let min_left = rect.left() + 48.0 + galley.size().x + 240.0;
+        let search_w = (search_right - min_left).clamp(150.0, 290.0);
+        let search_rect = Rect::from_min_size(
+            Pos2::new(search_right - search_w, rect.top() + 15.0),
+            Vec2::new(search_w, 34.0),
         );
-        ui.painter().text(
-            Pos2::new(search_rect.left() + 13.0, search_rect.center().y),
+        p.rect_filled(search_rect, 9, SURF);
+        p.rect_stroke(search_rect, 9, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+        p.text(
+            Pos2::new(search_rect.left() + 12.0, search_rect.center().y),
             Align2::LEFT_CENTER,
             "⌕",
-            icon(17.0),
-            Color32::from_rgb(0x6d, 0x87, 0xa2),
+            icon(15.0),
+            DIM,
         );
-        let show_hint = search_w > 250.0;
-        if show_hint {
-            ui.painter().text(
-                Pos2::new(search_rect.right() - 9.0, search_rect.center().y),
-                Align2::RIGHT_CENTER,
-                "Ctrl + K",
-                bold(10.5),
-                Color32::from_rgb(0x6d, 0x87, 0xa2),
-            );
-        }
         let edit_rect = Rect::from_min_max(
-            Pos2::new(search_rect.left() + 34.0, search_rect.top() + 8.0),
-            Pos2::new(
-                search_rect.right() - if show_hint { 66.0 } else { 10.0 },
-                search_rect.bottom() - 8.0,
-            ),
+            Pos2::new(search_rect.left() + 30.0, search_rect.top() + 6.0),
+            Pos2::new(search_rect.right() - 10.0, search_rect.bottom() - 6.0),
         );
         common::area(ui, edit_rect, |ui| {
             let response = ui.add(
                 egui::TextEdit::singleline(&mut self.query)
                     .hint_text(
-                        egui::RichText::new("Search snapshots…")
-                            .font(regular(13.0))
+                        egui::RichText::new("Search")
+                            .font(regular(12.5))
                             .color(DIM),
                     )
-                    .font(regular(13.0))
+                    .font(regular(12.5))
                     .desired_width(edit_rect.width())
                     .frame(false)
-                    .margin(Vec2::new(0.0, 4.0)),
+                    .margin(Vec2::new(0.0, 3.0)),
             );
             if self.focus_search {
                 response.request_focus();
@@ -238,6 +154,15 @@ impl App {
                 self.select_page(crate::Page::Dashboard);
             }
         });
+
+        p.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(rect.left() - 24.0, rect.bottom() - 1.0),
+                Vec2::new(rect.width() + 48.0, 1.0),
+            ),
+            0,
+            BORDER,
+        );
         ui.advance_cursor_after_rect(rect);
     }
 
@@ -282,7 +207,7 @@ impl App {
             let galley = p.layout_no_wrap(text.clone(), font, color);
             let w = galley.size().x + 18.0;
             let chip_rect = Rect::from_min_size(Pos2::new(x, chip_y), Vec2::new(w, 22.0));
-            p.rect_filled(chip_rect, 8, bg.unwrap_or(Color32::from_rgb(0x0f, 0x24, 0x37)));
+            p.rect_filled(chip_rect, 8, bg.unwrap_or(SURF2));
             p.rect_stroke(
                 chip_rect,
                 8,
@@ -453,7 +378,7 @@ impl App {
         let response = ui.interact(gear_rect, ui.id().with("gear"), Sense::click());
         let hovered = response.hovered();
         if hovered {
-            ui.painter().rect_filled(gear_rect, 8, Color32::from_rgb(0x0e, 0x21, 0x35));
+            ui.painter().rect_filled(gear_rect, 8, SURF2);
         }
         ui.painter().text(
             gear_rect.center(),

@@ -53,6 +53,107 @@ fn card_header(p: &egui::Painter, rect: Rect, glyph: &str, color: Color32, title
     );
 }
 
+
+fn smooth_path(points: &[Pos2], samples: usize) -> Vec<Pos2> {
+    if points.len() < 2 {
+        return points.to_vec();
+    }
+    let mut out: Vec<Pos2> = Vec::with_capacity(points.len() * samples + 1);
+    for i in 0..points.len() - 1 {
+        let p0 = if i == 0 { points[0] } else { points[i - 1] };
+        let p1 = points[i];
+        let p2 = points[i + 1];
+        let p3 = if i + 2 < points.len() { points[i + 2] } else { p2 };
+        for s in 0..samples {
+            let t = s as f32 / samples as f32;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            out.push(Pos2::new(
+                0.5 * ((2.0 * p1.x)
+                    + (-p0.x + p2.x) * t
+                    + (2.0 * p0.x - 5.0 * p1.x + 4.0 * p2.x - p3.x) * t2
+                    + (-p0.x + 3.0 * p1.x - 3.0 * p2.x + p3.x) * t3),
+                0.5 * ((2.0 * p1.y)
+                    + (-p0.y + p2.y) * t
+                    + (2.0 * p0.y - 5.0 * p1.y + 4.0 * p2.y - p3.y) * t2
+                    + (-p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y) * t3),
+            ));
+        }
+    }
+    out.push(*points.last().unwrap());
+    out
+}
+
+/// One of the three coloured tiles at the top of the dashboard.
+fn paint_tile(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    label: &str,
+    value: &str,
+    delta: &str,
+    from: Color32,
+    to: Color32,
+) -> bool {
+    let __painter = ui.painter().with_clip_rect(rect);
+    let p = &__painter;
+    gradient_rect(p, rect, from, to);
+    p.rect_stroke(
+        rect,
+        14,
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 26)),
+        StrokeKind::Inside,
+    );
+    p.text(
+        Pos2::new(rect.left() + 18.0, rect.top() + 16.0),
+        Align2::LEFT_TOP,
+        label,
+        regular(12.5),
+        Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+    );
+    p.text(
+        Pos2::new(rect.left() + 18.0, rect.top() + 40.0),
+        Align2::LEFT_TOP,
+        elide(p, value, &bold(28.0), rect.width() - 36.0),
+        bold(28.0),
+        Color32::WHITE,
+    );
+    let galley = p.layout_no_wrap(delta.to_string(), bold(11.0), Color32::WHITE);
+    let chip = Rect::from_min_size(
+        Pos2::new(rect.left() + 18.0, rect.bottom() - 35.0),
+        Vec2::new(galley.size().x + 20.0, 24.0),
+    );
+    p.rect_filled(
+        chip,
+        8,
+        Color32::from_rgba_unmultiplied(255, 255, 255, 34),
+    );
+    p.galley(
+        chip.min + Vec2::new(10.0, (24.0 - galley.size().y) * 0.5),
+        galley,
+        Color32::WHITE,
+    );
+
+    let detail = Rect::from_min_size(
+        Pos2::new(rect.right() - 18.0 - 68.0, rect.bottom() - 37.0),
+        Vec2::new(68.0, 26.0),
+    );
+    let resp = ui.interact(detail, ui.id().with(("tile_detail", label)), Sense::click());
+    let bg = if resp.hovered() {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 70)
+    } else {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 34)
+    };
+    p.rect_filled(detail, 8, bg);
+    p.text(
+        detail.center(),
+        Align2::CENTER_CENTER,
+        "Detail",
+        bold(11.0),
+        Color32::WHITE,
+    );
+    resp.clicked()
+}
+
 impl App {
     pub fn open_timeline_at(&mut self, sid: Option<String>) {
         if self.pid.is_none() {
@@ -63,8 +164,31 @@ impl App {
     }
 
     pub fn ui_dashboard(&mut self, ui: &mut egui::Ui) {
-        let wide = ui.available_width() >= 900.0;
-        let content_h = if wide { 676.0 } else { 1352.0 };
+        let wide = ui.available_width() >= 940.0;
+        let gap = 14.0;
+        let tile_h = 118.0;
+        let chart_h = 268.0;
+        let strip_h = 236.0;
+        let bottom_h = 292.0;
+        let cols = if wide { 3usize } else { 1usize };
+        let tile_rows = (3 + cols - 1) / cols;
+        let content_h = if wide {
+            tile_h + gap + chart_h + gap + strip_h + gap + bottom_h + 8.0
+        } else {
+            tile_rows as f32 * (tile_h + gap)
+                + chart_h
+                + gap
+                + 300.0
+                + gap
+                + strip_h
+                + gap
+                + 236.0
+                + gap
+                + bottom_h
+                + gap
+                + bottom_h
+                + 8.0
+        };
         egui::ScrollArea::vertical()
             .id_salt("dashboard")
             .auto_shrink([false, false])
@@ -72,134 +196,113 @@ impl App {
                 let width = ui.available_width();
                 let (content, _) =
                     ui.allocate_exact_size(Vec2::new(width, content_h), Sense::hover());
-                let gap = 12.0;
-                let stat_h = 104.0;
-                let cols = if wide { 4usize } else { 2usize };
-                let stat_w = (width - gap * (cols - 1) as f32) / cols as f32;
-                let rows = if wide { 1.0 } else { 2.0 };
+                let tile_w = (width - gap * (cols - 1) as f32) / cols as f32;
 
-                let series = self.dash.series.clone();
-                let project_series: Vec<f64> = (0..7)
-                    .map(|i| (self.dash.project_count as i64 - (6 - i)).max(0) as f64)
-                    .collect();
-                let sizes = self.dash.sizes.clone();
-                let cards: [(&str, &str, &str, Color32, String, i64, Vec<f64>); 3] = [
+                let snapshot_delta = format!(
+                    "{} {}%",
+                    if self.dash.pct >= 0 { "↑" } else { "↓" },
+                    self.dash.pct.abs()
+                );
+                let project_delta = if self.dash.new_projects > 0 {
+                    format!("↑ {}", self.dash.new_projects)
+                } else {
+                    "stable".to_string()
+                };
+                let space_delta = format!(
+                    "{} {}%",
+                    if self.dash.space_delta >= 0 { "↑" } else { "↓" },
+                    self.dash.space_delta.abs()
+                );
+                let tiles: [(&str, String, String, Color32, Color32); 3] = [
                     (
-                        "Total Snapshots",
-                        "▤",
-                        "accent",
-                        ACCENT,
-                        if self.dash.pct >= 0 {
-                            format!("↑ +{}%", self.dash.pct)
-                        } else {
-                            format!("↓ {}%", self.dash.pct)
-                        },
-                        self.dash.pct,
-                        series,
+                        "Total snapshots",
+                        self.dash.total_snaps.to_string(),
+                        snapshot_delta,
+                        TILE_GREEN_A,
+                        TILE_GREEN_B,
                     ),
                     (
-                        "Tracked Projects",
-                        "▢",
-                        "blue",
-                        Color32::from_rgb(0x60, 0xa5, 0xfa),
-                        if self.dash.new_projects > 0 {
-                            format!("↑ +{}", self.dash.new_projects)
-                        } else {
-                            "stable".into()
-                        },
-                        if self.dash.new_projects > 0 { 1 } else { 0 },
-                        project_series,
+                        "Tracked projects",
+                        self.dash.project_count.to_string(),
+                        project_delta,
+                        TILE_BLUE_A,
+                        TILE_BLUE_B,
                     ),
                     (
-                        "Used Space",
-                        "◍",
-                        "violet",
-                        VIOLET,
-                        if self.dash.space_delta >= 0 {
-                            format!("↑ +{}%", self.dash.space_delta)
-                        } else {
-                            format!("↓ {}%", self.dash.space_delta)
-                        },
-                        self.dash.space_delta,
-                        sizes,
+                        "Used space",
+                        store::fmt_bytes(self.dash.used),
+                        space_delta,
+                        TILE_VIOLET_A,
+                        TILE_VIOLET_B,
                     ),
                 ];
-                let values = [
-                    self.dash.total_snaps.to_string(),
-                    self.dash.project_count.to_string(),
-                    store::fmt_bytes(self.dash.used),
-                ];
 
-                for i in 0..4 {
+                let mut open_timeline = false;
+                let mut go_settings = false;
+                for (i, (label, value, delta, from, to)) in tiles.iter().enumerate() {
                     let col = i % cols;
                     let row = i / cols;
                     let rect = Rect::from_min_size(
                         Pos2::new(
-                            content.left() + col as f32 * (stat_w + gap),
-                            content.top() + row as f32 * (stat_h + gap),
+                            content.left() + col as f32 * (tile_w + gap),
+                            content.top() + row as f32 * (tile_h + gap),
                         ),
-                        Vec2::new(stat_w, stat_h),
+                        Vec2::new(tile_w, tile_h),
                     );
-                    if i == 3 {
-                        self.paint_status_card(ui, rect);
-                    } else {
-                        let (caption, glyph, _, color, delta, trend, data) = &cards[i];
-                        common::stat_card(
-                            ui,
-                            rect,
-                            &values[i],
-                            caption,
-                            glyph,
-                            *color,
-                            delta,
-                            *trend,
-                            data,
-                            "",
-                        );
+                    if paint_tile(ui, rect, label, value, delta, *from, *to) {
+                        match i {
+                            0 => open_timeline = true,
+                            2 => go_settings = true,
+                            _ => {}
+                        }
                     }
                 }
-                let mut y = content.top() + rows * stat_h + (rows - 1.0) * gap + gap;
 
-                let mid_h = 252.0;
+                let mut y = content.top() + tile_rows as f32 * (tile_h + gap);
                 if wide {
-                    let current_w = 352.0;
-                    let timeline_rect = Rect::from_min_size(
+                    let recent_w = 326.0;
+                    let chart_rect = Rect::from_min_size(
                         Pos2::new(content.left(), y),
-                        Vec2::new(width - current_w - gap, mid_h),
+                        Vec2::new(width - recent_w - gap, chart_h),
                     );
-                    self.paint_timeline_card(ui, timeline_rect);
-                    let current_rect = Rect::from_min_size(
-                        Pos2::new(content.right() - current_w, y),
-                        Vec2::new(current_w, mid_h),
-                    );
-                    self.paint_current_state(ui, current_rect);
-                    y += mid_h + gap;
-                } else {
-                    let timeline_rect = Rect::from_min_size(
-                        Pos2::new(content.left(), y),
-                        Vec2::new(width, mid_h),
-                    );
-                    self.paint_timeline_card(ui, timeline_rect);
-                    y += mid_h + gap;
-                    let current_rect = Rect::from_min_size(
-                        Pos2::new(content.left(), y),
-                        Vec2::new(width, 236.0),
-                    );
-                    self.paint_current_state(ui, current_rect);
-                    y += 236.0 + gap;
-                }
-
-                let bottom_h = 296.0;
-                if wide {
-                    let what_w = 276.0;
-                    let quick_w = 312.0;
+                    self.paint_chart_card(ui, chart_rect);
                     let recent_rect = Rect::from_min_size(
+                        Pos2::new(content.right() - recent_w, y),
+                        Vec2::new(recent_w, chart_h),
+                    );
+                    self.paint_recent(ui, recent_rect);
+                } else {
+                    let chart_rect = Rect::from_min_size(
+                        Pos2::new(content.left(), y),
+                        Vec2::new(width, chart_h),
+                    );
+                    self.paint_chart_card(ui, chart_rect);
+                    y += chart_h + gap;
+                    let recent_rect = Rect::from_min_size(
+                        Pos2::new(content.left(), y),
+                        Vec2::new(width, 300.0),
+                    );
+                    self.paint_recent(ui, recent_rect);
+                }
+                y += chart_h + gap;
+
+                let strip_rect = Rect::from_min_size(
+                    Pos2::new(content.left(), y),
+                    Vec2::new(width, strip_h),
+                );
+                self.paint_timeline_card(ui, strip_rect);
+                y += strip_h + gap;
+
+                if wide {
+                    let what_w = 300.0;
+                    let quick_w = 330.0;
+                    let current_rect = Rect::from_min_size(
                         Pos2::new(content.left(), y),
                         Vec2::new(width - what_w - quick_w - gap * 2.0, bottom_h),
                     );
-                    self.paint_recent(ui, recent_rect);
+                    self.paint_current_state(ui, current_rect);
                     let what_rect = Rect::from_min_size(
-                        Pos2::new(recent_rect.right() + gap, y),
+                        Pos2::new(current_rect.right() + gap, y),
                         Vec2::new(what_w, bottom_h),
                     );
                     self.paint_what_changed(ui, what_rect);
@@ -209,71 +312,173 @@ impl App {
                     );
                     self.paint_quick_actions(ui, quick_rect);
                 } else {
-                    let recent_rect = Rect::from_min_size(
+                    let current_rect = Rect::from_min_size(
+                        Pos2::new(content.left(), y),
+                        Vec2::new(width, 236.0),
+                    );
+                    self.paint_current_state(ui, current_rect);
+                    y += 236.0 + gap;
+                    let what_rect = Rect::from_min_size(
                         Pos2::new(content.left(), y),
                         Vec2::new(width, bottom_h),
                     );
-                    self.paint_recent(ui, recent_rect);
-                    y += bottom_h + gap;
-                    let half = (width - gap) / 2.0;
-                    let what_rect = Rect::from_min_size(
-                        Pos2::new(content.left(), y),
-                        Vec2::new(half, bottom_h),
-                    );
                     self.paint_what_changed(ui, what_rect);
+                    y += bottom_h + gap;
                     let quick_rect = Rect::from_min_size(
-                        Pos2::new(what_rect.right() + gap, y),
-                        Vec2::new(half, bottom_h),
+                        Pos2::new(content.left(), y),
+                        Vec2::new(width, bottom_h),
                     );
                     self.paint_quick_actions(ui, quick_rect);
+                }
+                let _ = y;
+
+                if open_timeline {
+                    self.open_timeline_at(None);
+                }
+                if go_settings {
+                    self.select_page(crate::Page::Settings);
                 }
             });
     }
 
-    fn paint_status_card(&mut self, ui: &mut egui::Ui, rect: Rect) {
-        let (ok, title, sub) = if self.pid.is_none() {
-            (false, "No project yet", "Add a folder to start capturing.")
-        } else if self.dash.dirty {
-            (false, "Changes pending", "The folder changed since the last snapshot.")
-        } else {
-            (true, "All good!", "Everything is backed up.")
-        };
-        let color = if ok { GREEN } else { AMBER };
+    fn paint_chart_card(&mut self, ui: &mut egui::Ui, rect: Rect) {
         let __painter = ui.painter().with_clip_rect(rect);
-    let p = &__painter;
-        card(p, rect, 16, SURF);
-        let tile = Rect::from_min_size(
-            Pos2::new(rect.left() + 16.0, rect.top() + 14.0),
-            Vec2::splat(44.0),
-        );
-        p.rect_filled(tile, 12, darker(color, 4.3));
-        p.rect_stroke(
-            tile,
-            12,
-            Stroke::new(1.0, darker(color, 3.2)),
-            StrokeKind::Inside,
-        );
+        let p = &__painter;
+        card(p, rect, 14, SURF);
+
         p.text(
-            tile.center(),
-            Align2::CENTER_CENTER,
-            if ok { "✓" } else { "!" },
-            icon(19.0),
-            color,
-        );
-        p.text(
-            Pos2::new(tile.right() + 12.0, rect.top() + 24.0),
+            Pos2::new(rect.left() + 18.0, rect.top() + 15.0),
             Align2::LEFT_TOP,
-            title,
-            bold(16.0),
+            "Snapshots over time",
+            bold(15.0),
             TEXT,
         );
+        let (status, color) = if self.pid.is_none() {
+            ("No project".to_string(), DIM)
+        } else if self.dash.dirty {
+            ("Changes pending".to_string(), AMBER)
+        } else {
+            ("All good".to_string(), GREEN)
+        };
+        let galley = p.layout_no_wrap(status.clone(), bold(11.0), color);
+        let pill = Rect::from_min_size(
+            Pos2::new(
+                rect.right() - 18.0 - (galley.size().x + 20.0),
+                rect.top() + 11.0,
+            ),
+            Vec2::new(galley.size().x + 20.0, 23.0),
+        );
+        p.rect_filled(pill, 8, darker(color, 4.4));
+        p.galley(
+            pill.min + Vec2::new(10.0, (23.0 - galley.size().y) * 0.5),
+            galley,
+            color,
+        );
+
+        let caption = if self.dash.total_snaps > 0 {
+            format!("{} snapshots across all projects", self.dash.total_snaps)
+        } else {
+            "Capture a snapshot to start the chart".to_string()
+        };
         p.text(
-            Pos2::new(tile.right() + 12.0, rect.top() + 48.0),
+            Pos2::new(rect.left() + 18.0, rect.top() + 36.0),
             Align2::LEFT_TOP,
-            elide(p, sub, &regular(12.0), rect.right() - tile.right() - 26.0),
-            regular(12.0),
+            caption,
+            regular(11.0),
             MUTED,
         );
+        let plot = Rect::from_min_max(
+            Pos2::new(rect.left() + 46.0, rect.top() + 64.0),
+            Pos2::new(rect.right() - 18.0, rect.bottom() - 56.0),
+        );
+        let series = self.dash.series.clone();
+        let n = series.len().max(2);
+        let hi = series.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
+        for i in 0..=3 {
+            let y = plot.top() + plot.height() * i as f32 / 3.0;
+            p.line_segment(
+                [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
+                Stroke::new(1.0, alpha(BORDER, 170)),
+            );
+            p.text(
+                Pos2::new(plot.left() - 9.0, y),
+                Align2::RIGHT_CENTER,
+                format!("{}", (hi * (1.0 - i as f64 / 3.0)).round() as i64),
+                regular(9.5),
+                DIM,
+            );
+        }
+        let pts: Vec<Pos2> = series
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                Pos2::new(
+                    plot.left() + i as f32 * plot.width() / (n - 1) as f32,
+                    plot.bottom() - (v / hi) as f32 * (plot.height() - 8.0),
+                )
+            })
+            .collect();
+        if pts.len() >= 2 {
+            let curve: Vec<Pos2> = smooth_path(&pts, 14)
+                .into_iter()
+                .map(|pt| Pos2::new(pt.x, pt.y.clamp(plot.top(), plot.bottom())))
+                .collect();
+            // The area under the line is a strip of quads, which stays clean even
+            // when the curve is not convex.
+            let mut mesh = egui::Mesh::default();
+            let uv = egui::epaint::WHITE_UV;
+            for pair in curve.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                let base = plot.bottom();
+                let i = mesh.vertices.len() as u32;
+                for (pos, color) in [
+                    (a, alpha(AMBER, 78)),
+                    (b, alpha(AMBER, 78)),
+                    (Pos2::new(b.x, base), alpha(AMBER, 6)),
+                    (Pos2::new(a.x, base), alpha(AMBER, 6)),
+                ] {
+                    mesh.vertices.push(egui::epaint::Vertex { pos, uv, color });
+                }
+                mesh.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
+            }
+            p.add(egui::Shape::mesh(mesh));
+            p.add(egui::Shape::line(curve, Stroke::new(2.2, AMBER)));
+            if let Some(last) = pts.last() {
+                p.circle_filled(*last, 4.2, SURF);
+                p.circle_stroke(*last, 4.2, Stroke::new(2.0, AMBER));
+            }
+        }
+        let today = store::now();
+        for i in 0..n {
+            let ts = today - (n - 1 - i) as f64 * 86400.0;
+            let x = plot.left() + i as f32 * plot.width() / (n - 1) as f32;
+            p.text(
+                Pos2::new(x, plot.bottom() + 10.0),
+                Align2::CENTER_TOP,
+                store::short_day(ts),
+                regular(9.5),
+                DIM,
+            );
+        }
+
+        let detail = Rect::from_min_size(
+            Pos2::new(rect.right() - 18.0 - 76.0, rect.bottom() - 31.0),
+            Vec2::new(76.0, 24.0),
+        );
+        let resp = ui.interact(detail, ui.id().with("chart_detail"), Sense::click());
+        p.rect_filled(
+            detail,
+            8,
+            if resp.hovered() {
+                SURF2
+            } else {
+                alpha(SURF2, 180)
+            },
+        );
+        p.text(detail.center(), Align2::CENTER_CENTER, "Detail", bold(11.0), TEXT);
+        if resp.clicked() {
+            self.open_timeline_at(None);
+        }
     }
 
     fn paint_timeline_card(&mut self, ui: &mut egui::Ui, rect: Rect) {
@@ -337,11 +542,11 @@ impl App {
                 );
                 let chosen = selected.as_deref() == Some(snap.id.as_str());
                 let fill = if chosen {
-                    Color32::from_rgb(0x0d, 0x20, 0x30)
+                    SURF2
                 } else if response.hovered() {
-                    Color32::from_rgb(0x0c, 0x1e, 0x2e)
+                    SURF2
                 } else {
-                    Color32::from_rgb(0x0a, 0x18, 0x26)
+                    SURF
                 };
                 p.rect_filled(card_rect, 12, fill);
                 p.rect_stroke(
@@ -485,7 +690,7 @@ impl App {
             );
             let response = ui.interact(row, ui.id().with(("recent", i)), Sense::click());
             if response.hovered() {
-                p.rect_filled(row, 10, Color32::from_rgb(0x0e, 0x21, 0x35));
+                p.rect_filled(row, 10, SURF2);
                 p.rect_stroke(
                     row,
                     10,
@@ -539,7 +744,7 @@ impl App {
                     Pos2::new(cx - w, row.center().y - 11.0),
                     Vec2::new(w, 22.0),
                 );
-                p.rect_filled(chip_rect, 8, Color32::from_rgb(0x0f, 0x24, 0x37));
+                p.rect_filled(chip_rect, 8, SURF2);
                 p.rect_stroke(
                     chip_rect,
                     8,
@@ -561,7 +766,7 @@ impl App {
                 Pos2::new(cx - w, row.center().y - 11.0),
                 Vec2::new(w, 22.0),
             );
-            p.rect_filled(chip_rect, 8, Color32::from_rgb(0x0f, 0x24, 0x37));
+            p.rect_filled(chip_rect, 8, SURF2);
             p.rect_stroke(
                 chip_rect,
                 8,
@@ -681,11 +886,11 @@ impl App {
             );
             let response = ui.interact(row, ui.id().with(("quick", action)), Sense::click());
             if response.hovered() {
-                p.rect_filled(row, 10, Color32::from_rgb(0x0e, 0x21, 0x35));
+                p.rect_filled(row, 10, SURF2);
                 p.rect_stroke(
                     row,
                     10,
-                    Stroke::new(1.0, Color32::from_rgb(0x1b, 0x3f, 0x5c)),
+                    Stroke::new(1.0, BORDER2),
                     StrokeKind::Inside,
                 );
             }

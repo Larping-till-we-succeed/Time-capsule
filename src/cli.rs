@@ -233,6 +233,8 @@ fn cmd_restore(opts: &Opts) -> Result<i32, String> {
         whole,
         rels.as_deref(),
         !opts.no_safety,
+        true,
+        None,
     )
     .map_err(|e| e.to_string())?;
     if opts.json {

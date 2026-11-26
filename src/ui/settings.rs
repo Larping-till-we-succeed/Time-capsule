@@ -18,7 +18,7 @@ impl App {
 
     fn ui_settings_body(&mut self, ui: &mut egui::Ui) {
         let width = ui.available_width();
-        let rect = Rect::from_min_size(ui.cursor().min, Vec2::new(width, 300.0));
+        let rect = Rect::from_min_size(ui.cursor().min, Vec2::new(width, 380.0));
         let __painter = ui.painter().with_clip_rect(rect);
         let p = &__painter;
         card(p, rect, 16, SURF);
@@ -83,6 +83,48 @@ impl App {
                     "Automatic snapshots are marked “Auto-save” in the timeline and never replace the moments you capture by hand. They run for every project while TimeCapsule is open.",
                 )
                 .font(regular(12.5))
+                .color(MUTED),
+            )
+            .wrap(),
+        );
+
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Skip files larger than")
+                    .font(bold(13.0))
+                    .color(Color32::from_rgb(0xcf, 0xdf, 0xf0)),
+            );
+            ui.add(
+                egui::DragValue::new(&mut self.settings.max_mb)
+                    .range(1..=200)
+                    .speed(1.0)
+                    .suffix(" MB"),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Ignore")
+                    .font(bold(13.0))
+                    .color(Color32::from_rgb(0xcf, 0xdf, 0xf0)),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.settings.extra_ignore)
+                    .hint_text(
+                        RichText::new("*.log, secrets, *.psd")
+                            .font(regular(12.5))
+                            .color(DIM),
+                    )
+                    .font(regular(12.5))
+                    .desired_width(ui.available_width() - 8.0),
+            );
+        });
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "Comma separated names or globs (* and ?), matched at any depth. Files above the size limit are listed in the snapshot detail instead of disappearing silently.",
+                )
+                .font(regular(12.0))
                 .color(MUTED),
             )
             .wrap(),

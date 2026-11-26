@@ -8,22 +8,30 @@ use egui::{
     Pos2, Rect, Response, RichText, Sense, Shape, Stroke, StrokeKind, Ui, Vec2,
 };
 
-pub const BG: Color32 = Color32::from_rgb(0x05, 0x0a, 0x12);
-pub const SIDEBAR: Color32 = Color32::from_rgb(0x05, 0x0b, 0x14);
-pub const SURF: Color32 = Color32::from_rgb(0x0a, 0x18, 0x26);
-pub const SURF2: Color32 = Color32::from_rgb(0x0f, 0x22, 0x33);
-pub const BORDER: Color32 = Color32::from_rgb(0x12, 0x2b, 0x42);
-pub const BORDER2: Color32 = Color32::from_rgb(0x1d, 0x44, 0x63);
-pub const TEXT: Color32 = Color32::from_rgb(0xe9, 0xf1, 0xfb);
-pub const MUTED: Color32 = Color32::from_rgb(0x8e, 0xa6, 0xc2);
-pub const DIM: Color32 = Color32::from_rgb(0x5a, 0x72, 0x90);
-pub const ACCENT: Color32 = Color32::from_rgb(0x38, 0xbd, 0xf8);
-pub const ACCENT_DARK: Color32 = Color32::from_rgb(0x16, 0x67, 0xc9);
-pub const GREEN: Color32 = Color32::from_rgb(0x34, 0xd3, 0x99);
-pub const RED: Color32 = Color32::from_rgb(0xf8, 0x71, 0x71);
-pub const BLUE: Color32 = Color32::from_rgb(0x7d, 0xd3, 0xfc);
-pub const VIOLET: Color32 = Color32::from_rgb(0xa7, 0x8b, 0xfa);
-pub const AMBER: Color32 = Color32::from_rgb(0xfb, 0xbf, 0x24);
+pub const BG: Color32 = Color32::from_rgb(0x1b, 0x23, 0x35);
+pub const SIDEBAR: Color32 = Color32::from_rgb(0x19, 0x20, 0x30);
+pub const SURF: Color32 = Color32::from_rgb(0x1f, 0x29, 0x3d);
+pub const SURF2: Color32 = Color32::from_rgb(0x25, 0x30, 0x48);
+pub const BORDER: Color32 = Color32::from_rgb(0x28, 0x33, 0x4c);
+pub const BORDER2: Color32 = Color32::from_rgb(0x34, 0x40, 0x5e);
+pub const TEXT: Color32 = Color32::from_rgb(0xee, 0xf1, 0xf8);
+pub const MUTED: Color32 = Color32::from_rgb(0x9a, 0xa4, 0xbc);
+pub const DIM: Color32 = Color32::from_rgb(0x6c, 0x78, 0x94);
+pub const ACCENT: Color32 = Color32::from_rgb(0x5b, 0x8c, 0xff);
+pub const ACCENT_DARK: Color32 = Color32::from_rgb(0x3a, 0x62, 0xd6);
+pub const GREEN: Color32 = Color32::from_rgb(0x2b, 0xc4, 0x8a);
+pub const RED: Color32 = Color32::from_rgb(0xf2, 0x6b, 0x6b);
+pub const BLUE: Color32 = Color32::from_rgb(0x38, 0xa8, 0xe0);
+pub const VIOLET: Color32 = Color32::from_rgb(0x7a, 0x6b, 0xf0);
+pub const AMBER: Color32 = Color32::from_rgb(0xf0, 0xa9, 0x3b);
+
+/// The three gradient tiles on the dashboard.
+pub const TILE_GREEN_A: Color32 = Color32::from_rgb(0x25, 0xc4, 0x92);
+pub const TILE_GREEN_B: Color32 = Color32::from_rgb(0x14, 0x9e, 0x74);
+pub const TILE_BLUE_A: Color32 = Color32::from_rgb(0x35, 0xab, 0xe2);
+pub const TILE_BLUE_B: Color32 = Color32::from_rgb(0x1f, 0x8a, 0xc8);
+pub const TILE_VIOLET_A: Color32 = Color32::from_rgb(0x6a, 0x6c, 0xc8);
+pub const TILE_VIOLET_B: Color32 = Color32::from_rgb(0x4c, 0x4f, 0x9c);
 
 pub fn bold_family() -> FontFamily {
     FontFamily::Name("bold".into())
@@ -187,32 +195,32 @@ pub fn install_style(ctx: &egui::Context) {
     let mut v = Visuals::dark();
     v.override_text_color = Some(TEXT);
     v.panel_fill = BG;
-    v.window_fill = Color32::from_rgb(0x07, 0x14, 0x22);
-    v.window_stroke = Stroke::new(1.0, BORDER2);
-    v.window_corner_radius = CornerRadius::same(12);
-    v.extreme_bg_color = Color32::from_rgb(0x07, 0x14, 0x22);
+    v.window_fill = SURF;
+    v.window_stroke = Stroke::new(1.0, BORDER);
+    v.window_corner_radius = CornerRadius::same(14);
+    v.extreme_bg_color = Color32::from_rgb(0x17, 0x1e, 0x2e);
     v.faint_bg_color = SURF2;
-    v.selection.bg_fill = Color32::from_rgb(0x16, 0x4e, 0x80);
+    v.selection.bg_fill = Color32::from_rgb(0x33, 0x4c, 0x86);
     v.selection.stroke = Stroke::new(1.0, ACCENT);
     v.widgets.noninteractive.bg_fill = SURF;
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
     v.widgets.noninteractive.corner_radius = CornerRadius::same(10);
-    v.widgets.inactive.bg_fill = Color32::from_rgb(0x0e, 0x21, 0x35);
-    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(0x0e, 0x21, 0x35);
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x1b, 0x3f, 0x5c));
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(0xdb, 0xe9, 0xf8));
+    v.widgets.inactive.bg_fill = SURF2;
+    v.widgets.inactive.weak_bg_fill = SURF2;
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
     v.widgets.inactive.corner_radius = CornerRadius::same(10);
-    v.widgets.hovered.bg_fill = Color32::from_rgb(0x16, 0x34, 0x4d);
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x16, 0x34, 0x4d);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x2a, 0x5d, 0x85));
+    v.widgets.hovered.bg_fill = Color32::from_rgb(0x2c, 0x38, 0x54);
+    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x2c, 0x38, 0x54);
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, BORDER2);
     v.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::WHITE);
     v.widgets.hovered.corner_radius = CornerRadius::same(10);
-    v.widgets.active.bg_fill = Color32::from_rgb(0x0a, 0x1a, 0x2a);
-    v.widgets.active.weak_bg_fill = Color32::from_rgb(0x0a, 0x1a, 0x2a);
+    v.widgets.active.bg_fill = Color32::from_rgb(0x33, 0x41, 0x60);
+    v.widgets.active.weak_bg_fill = Color32::from_rgb(0x33, 0x41, 0x60);
     v.widgets.active.bg_stroke = Stroke::new(1.0, BORDER2);
     v.widgets.active.corner_radius = CornerRadius::same(10);
-    v.widgets.open.bg_fill = Color32::from_rgb(0x0a, 0x1a, 0x2a);
+    v.widgets.open.bg_fill = SURF2;
     v.widgets.open.bg_stroke = Stroke::new(1.0, ACCENT);
     style.visuals = v;
     style.spacing.item_spacing = Vec2::new(8.0, 8.0);
@@ -309,54 +317,54 @@ pub fn button(ui: &mut Ui, label: &str, kind: Btn, enabled: bool) -> Response {
     let (fill, stroke, fg) = match kind {
         Btn::Primary => {
             let fill = if !enabled {
-                Color32::from_rgb(0x0d, 0x1f, 0x30)
+                Color32::from_rgb(0x2a, 0x33, 0x4a)
             } else if pressed {
-                Color32::from_rgb(0x1b, 0x5a, 0xbd)
+                Color32::from_rgb(0x34, 0x5c, 0xcf)
             } else if hovered {
-                Color32::from_rgb(0x37, 0x82, 0xf0)
+                Color32::from_rgb(0x6d, 0x99, 0xff)
             } else {
-                Color32::from_rgb(0x27, 0x72, 0xe0)
+                ACCENT
             };
-            (fill, Color32::from_rgb(0x2f, 0x7f, 0xdc), Color32::from_rgb(0xf2, 0xf9, 0xff))
+            (fill, Color32::TRANSPARENT, Color32::from_rgb(0xf7, 0xf9, 0xff))
         }
         Btn::Ghost => {
             let fill = if !enabled {
-                Color32::from_rgb(0x07, 0x14, 0x22)
+                Color32::from_rgb(0x20, 0x28, 0x3b)
             } else if pressed {
-                Color32::from_rgb(0x0a, 0x1a, 0x2a)
+                SURF2
             } else if hovered {
-                Color32::from_rgb(0x14, 0x2c, 0x44)
+                Color32::from_rgb(0x2c, 0x38, 0x54)
             } else {
-                Color32::from_rgb(0x0e, 0x21, 0x35)
+                Color32::from_rgb(0x23, 0x2d, 0x43)
             };
             let stroke = if !enabled {
                 BORDER
             } else if hovered {
-                Color32::from_rgb(0x2a, 0x5d, 0x85)
+                BORDER2
             } else {
-                Color32::from_rgb(0x1b, 0x3f, 0x5c)
+                BORDER
             };
-            (fill, stroke, if enabled { Color32::from_rgb(0xdb, 0xe9, 0xf8) } else { DIM })
+            (fill, stroke, if enabled { TEXT } else { DIM })
         }
         Btn::Danger => {
             let fill = if hovered {
-                Color32::from_rgb(0x3a, 0x1a, 0x22)
+                Color32::from_rgb(0x48, 0x24, 0x2c)
             } else {
-                Color32::from_rgb(0x2a, 0x13, 0x19)
+                Color32::from_rgb(0x38, 0x1d, 0x24)
             };
-            (fill, Color32::from_rgb(0x6b, 0x2a, 0x34), Color32::from_rgb(0xff, 0x9b, 0x9b))
+            (fill, Color32::from_rgb(0x6b, 0x36, 0x40), Color32::from_rgb(0xff, 0xa9, 0xa9))
         }
-        Btn::Link => (Color32::TRANSPARENT, Color32::TRANSPARENT, if hovered { Color32::from_rgb(0x8f, 0xd6, 0xff) } else { ACCENT }),
+        Btn::Link => (Color32::TRANSPARENT, Color32::TRANSPARENT, if hovered { Color32::from_rgb(0xa9, 0xc2, 0xff) } else { ACCENT }),
         Btn::Nav => {
             if pressed || hovered {
-                (Color32::from_rgb(0x0e, 0x21, 0x35), Color32::TRANSPARENT, TEXT)
+                (SURF2, Color32::TRANSPARENT, TEXT)
             } else {
                 (Color32::TRANSPARENT, Color32::TRANSPARENT, MUTED)
             }
         }
         Btn::Quick => {
             if hovered {
-                (Color32::from_rgb(0x0e, 0x21, 0x35), Color32::from_rgb(0x1b, 0x3f, 0x5c), TEXT)
+                (SURF2, BORDER, TEXT)
             } else {
                 (Color32::TRANSPARENT, Color32::TRANSPARENT, TEXT)
             }
@@ -405,7 +413,7 @@ pub fn card(painter: &Painter, rect: Rect, radius: u8, fill: Color32) {
     painter.rect_stroke(
         rect,
         radius,
-        Stroke::new(1.0, Color32::from_rgb(0x14, 0x30, 0x49)),
+        Stroke::new(1.0, BORDER),
         StrokeKind::Inside,
     );
 }

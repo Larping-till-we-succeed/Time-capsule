@@ -19,8 +19,8 @@ pub fn area(ui: &mut Ui, rect: Rect, add: impl FnOnce(&mut Ui)) {
 pub fn card_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(SURF)
-        .stroke(Stroke::new(1.0, Color32::from_rgb(0x14, 0x30, 0x49)))
-        .corner_radius(16)
+        .stroke(Stroke::new(1.0, BORDER))
+        .corner_radius(14)
         .inner_margin(egui::Margin::symmetric(16, 12))
 }
 
@@ -190,7 +190,7 @@ pub fn sparkline(painter: &egui::Painter, rect: Rect, data: &[f64], color: Color
 }
 
 pub fn mini_bar(painter: &egui::Painter, rect: Rect, frac: f32, color: Color32) {
-    painter.rect_filled(rect, 3, Color32::from_rgb(0x0f, 0x22, 0x33));
+    painter.rect_filled(rect, 3, SURF2);
     let f = frac.clamp(0.0, 1.0);
     let w = (rect.width() * f).max(3.0);
     painter.rect_filled(
@@ -443,7 +443,7 @@ pub fn paint_chip(
     let w = galley.size().x + 18.0;
     let h = galley.size().y + 7.0;
     let rect = Rect::from_min_size(left_top, Vec2::new(w, h));
-    p.rect_filled(rect, 8, bg.unwrap_or(Color32::from_rgb(0x0f, 0x24, 0x37)));
+    p.rect_filled(rect, 8, bg.unwrap_or(SURF2));
     p.rect_stroke(
         rect,
         8,
@@ -534,43 +534,33 @@ pub fn fact_row(ui: &mut Ui, name: &str, value: &str, label_width: f32, value_wi
 
 pub fn nav_row(ui: &mut Ui, glyph: &str, label: &str, active: bool) -> Response {
     let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 38.0), Sense::click());
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::click());
     let __painter = ui.painter().clone();
     let p = &__painter;
     let hovered = response.hovered();
     if active {
-        gradient_rect(
-            p,
-            rect,
-            Color32::from_rgb(0x17, 0x51, 0x7f),
-            Color32::from_rgb(0x0d, 0x2a, 0x46),
+        p.rect_filled(rect, 10, SURF2);
+        let bar = Rect::from_min_size(
+            Pos2::new(rect.left(), rect.center().y - 9.0),
+            Vec2::new(3.0, 18.0),
         );
-        p.rect_stroke(
-            rect,
-            10,
-            Stroke::new(1.0, Color32::from_rgb(0x1f, 0x5f, 0x92)),
-            StrokeKind::Inside,
-        );
+        p.rect_filled(bar, 2, ACCENT);
     } else if hovered {
-        p.rect_filled(rect, 10, Color32::from_rgb(0x0e, 0x21, 0x35));
+        p.rect_filled(rect, 10, alpha(SURF2, 150));
     }
-    let fg = if active {
-        Color32::from_rgb(0xc4, 0xe7, 0xff)
-    } else {
-        MUTED
-    };
+    let fg = if active || hovered { TEXT } else { MUTED };
     p.text(
-        Pos2::new(rect.left() + 14.0, rect.center().y),
+        Pos2::new(rect.left() + 16.0, rect.center().y),
         Align2::LEFT_CENTER,
         glyph,
-        icon(14.0),
-        fg,
+        icon(15.0),
+        if active { ACCENT } else { fg },
     );
     p.text(
-        Pos2::new(rect.left() + 40.0, rect.center().y),
+        Pos2::new(rect.left() + 42.0, rect.center().y),
         Align2::LEFT_CENTER,
         label,
-        bold(14.0),
+        bold(13.5),
         fg,
     );
     response

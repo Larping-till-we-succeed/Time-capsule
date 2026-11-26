@@ -109,6 +109,77 @@ pub struct FileInfo {
 
 pub type FileMap = BTreeMap<String, FileInfo>;
 
+/// How many skipped files a scan remembers for the UI.
+pub const MAX_REPORTED_SKIPS: usize = 200;
+
+/// Why a file in the project folder never made it into a snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    TooLarge { size: u64, limit: u64 },
+    TooManyFiles,
+}
+
+#[derive(Debug, Clone)]
+pub struct Skipped {
+    pub rel: String,
+    pub reason: SkipReason,
+}
+
+/// What a scan of the project folder found, plus what it had to leave out so
+/// the UI can say so instead of dropping files silently.
+#[derive(Debug, Clone, Default)]
+pub struct ScanReport {
+    pub files: Vec<(String, PathBuf, u64, i64)>,
+    pub skipped: Vec<Skipped>,
+}
+
+impl ScanReport {
+    pub fn total_bytes(&self) -> u64 {
+        self.files.iter().map(|f| f.2).sum()
+    }
+}
+
+/// One human sentence about what a scan left out. Empty when nothing was skipped.
+pub fn skip_summary(skipped: &[Skipped]) -> String {
+    if skipped.is_empty() {
+        return String::new();
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let too_large = skipped
+        .iter()
+        .filter(|s| matches!(s.reason, SkipReason::TooLarge { .. }))
+        .count();
+    if too_large > 0 {
+        let limit = skipped
+            .iter()
+            .find_map(|s| match s.reason {
+                SkipReason::TooLarge { limit, .. } => Some(limit),
+                _ => None,
+            })
+            .unwrap_or(MAX_FILE);
+        parts.push(format!(
+            "{} file{} over {} skipped",
+            too_large,
+            if too_large == 1 { "" } else { "s" },
+            fmt_bytes(limit)
+        ));
+    }
+    if skipped
+        .iter()
+        .any(|s| matches!(s.reason, SkipReason::TooManyFiles))
+    {
+        parts.push(format!(
+            "only the first {} files are tracked",
+            MAX_FILES
+        ));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Snapshot {
     #[serde(default)]
@@ -517,7 +588,7 @@ fn mtime_ns(meta: &fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
-pub fn scan_project(path: &Path) -> Vec<(String, PathBuf, u64, i64)> {
+pub fn scan_project(path: &Path) -> ScanReport {
     let cfg = settings();
     let extra: Vec<String> = cfg
         .extra_ignore
@@ -527,6 +598,7 @@ pub fn scan_project(path: &Path) -> Vec<(String, PathBuf, u64, i64)> {
         .collect();
     let max_file = if cfg.max_file == 0 { MAX_FILE } else { cfg.max_file };
     let mut found = Vec::new();
+    let mut skipped = Vec::new();
     let walker = walkdir::WalkDir::new(path)
         .follow_links(false)
         .sort_by_file_name()
@@ -558,20 +630,36 @@ pub fn scan_project(path: &Path) -> Vec<(String, PathBuf, u64, i64)> {
             Err(_) => continue,
         };
         let size = meta.len();
-        if size > max_file {
-            continue;
-        }
         let ap = entry.path().to_path_buf();
         let rel = match ap.strip_prefix(path) {
             Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };
+        if size > max_file {
+            if skipped.len() < MAX_REPORTED_SKIPS {
+                skipped.push(Skipped {
+                    rel,
+                    reason: SkipReason::TooLarge {
+                        size,
+                        limit: max_file,
+                    },
+                });
+            }
+            continue;
+        }
         found.push((rel, ap, size, mtime_ns(&meta)));
         if found.len() >= MAX_FILES {
+            skipped.push(Skipped {
+                rel: String::new(),
+                reason: SkipReason::TooManyFiles,
+            });
             break;
         }
     }
-    found
+    ScanReport {
+        files: found,
+        skipped,
+    }
 }
 
 /// Read the project folder. `hints` are the files of the previous snapshot on
@@ -582,7 +670,7 @@ fn collect(
     store_objects: bool,
     hints: Option<&FileMap>,
     progress: Option<&Progress>,
-) -> Result<(FileMap, u64)> {
+) -> Result<(FileMap, u64, Vec<Skipped>)> {
     let proj = get_project(pid).ok_or_else(|| StoreError("Unknown project.".into()))?;
     let path = PathBuf::from(&proj.path);
     if !path.is_dir() {
@@ -591,7 +679,10 @@ fn collect(
     let mut files = FileMap::new();
     let mut total = 0u64;
     let objects = objects_dir(pid);
-    let scanned = scan_project(&path);
+    let ScanReport {
+        files: scanned,
+        skipped,
+    } = scan_project(&path);
     if let Some(p) = progress {
         p.set_total(scanned.len());
     }
@@ -637,7 +728,7 @@ fn collect(
             p.tick();
         }
     }
-    Ok((files, total))
+    Ok((files, total, skipped))
 }
 
 fn same_files(a: &FileMap, b: &FileMap) -> bool {
@@ -704,7 +795,7 @@ pub fn take_snapshot(
     kind: &str,
     branch: Option<&str>,
 ) -> Result<Snapshot> {
-    take_snapshot_ctl(pid, note, title, kind, branch, None)
+    take_snapshot_ctl(pid, note, title, kind, branch, None).map(|(snap, _)| snap)
 }
 
 pub fn take_snapshot_ctl(
@@ -714,13 +805,13 @@ pub fn take_snapshot_ctl(
     kind: &str,
     branch: Option<&str>,
     progress: Option<&Progress>,
-) -> Result<Snapshot> {
+) -> Result<(Snapshot, Vec<Skipped>)> {
     let bid = branch
         .map(|b| b.to_string())
         .unwrap_or_else(|| active_branch(pid));
     let chain = branch_chain(pid, Some(&bid));
     let hints = chain.last().map(|s| s.files.clone());
-    let (files, total) = collect(pid, true, hints.as_ref(), progress)?;
+    let (files, total, skipped) = collect(pid, true, hints.as_ref(), progress)?;
     if files.is_empty() {
         return err("Nothing to capture: no trackable files were found.");
     }
@@ -740,7 +831,7 @@ pub fn take_snapshot_ctl(
     let mut snaps = load_snapshots(pid);
     snaps.push(snap.clone());
     save_snapshots(pid, &snaps);
-    Ok(snap)
+    Ok((snap, skipped))
 }
 
 pub fn update_snapshot(
@@ -809,7 +900,7 @@ pub fn has_changes(pid: &str, branch: Option<&str>) -> bool {
         return true;
     }
     match collect(pid, false, Some(&chain.last().unwrap().files), None) {
-        Ok((current, _)) => !same_files(&current, &chain.last().unwrap().files),
+        Ok((current, _, _)) => !same_files(&current, &chain.last().unwrap().files),
         Err(_) => false,
     }
 }
@@ -1055,7 +1146,7 @@ pub fn ordered_changes(d: &Diff) -> Vec<(String, &'static str)> {
 
 pub fn preview_restore(pid: &str, snap: &Snapshot) -> Result<(Vec<String>, Vec<String>)> {
     let hints = branch_chain(pid, None).last().map(|s| s.files.clone());
-    let (current, _) = collect(pid, false, hints.as_ref(), None)?;
+    let (current, _, _) = collect(pid, false, hints.as_ref(), None)?;
     let mut write: Vec<String> = snap
         .files
         .iter()
@@ -1072,12 +1163,18 @@ pub fn preview_restore(pid: &str, snap: &Snapshot) -> Result<(Vec<String>, Vec<S
     Ok((write, delete))
 }
 
+/// Put the project folder back to `snap`. `delete_extra` decides what happens
+/// to files that exist now but not in the snapshot: remove them, or leave them
+/// alone (reported as "kept" so the caller can list them).
+#[allow(clippy::too_many_arguments)]
 pub fn restore(
     pid: &str,
     snap: &Snapshot,
     whole: bool,
     rels: Option<&[String]>,
     safety: bool,
+    delete_extra: bool,
+    progress: Option<&Progress>,
 ) -> Result<(Vec<(String, String)>, Option<Snapshot>)> {
     let proj = get_project(pid).ok_or_else(|| StoreError("Unknown project.".into()))?;
     let path = PathBuf::from(&proj.path);
@@ -1101,7 +1198,28 @@ pub fn restore(
     } else {
         rels.map(|r| r.to_vec()).unwrap_or_default()
     };
+    // Files that exist now but not in the snapshot. Collected before writing so
+    // the progress total is known up front and a cancel cannot delete a file the
+    // restore just wrote.
+    let extras: Vec<String> = if whole {
+        match collect(pid, false, None, None) {
+            Ok((current, _, _)) => current
+                .keys()
+                .filter(|rel| !snap.files.contains_key(*rel))
+                .cloned()
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    if let Some(p) = progress {
+        p.set_total(targets.len() + extras.len());
+    }
     for rel in targets {
+        if aborted(progress) {
+            return err(CANCELLED);
+        }
         let info = match snap.files.get(&rel) {
             Some(i) => i,
             None => continue,
@@ -1114,6 +1232,9 @@ pub fn restore(
                         let mut hasher = Sha256::new();
                         hasher.update(&data);
                         if hex(&hasher.finalize()) == info.h {
+                            if let Some(p) = progress {
+                                p.tick();
+                            }
                             continue;
                         }
                     }
@@ -1124,17 +1245,24 @@ pub fn restore(
         if write_atomic(&dest, &data).is_ok() {
             actions.push(("restored".to_string(), rel));
         }
+        if let Some(p) = progress {
+            p.tick();
+        }
     }
-    if whole {
-        if let Ok((current, _)) = collect(pid, false, None, None) {
-            for rel in current.keys() {
-                if !snap.files.contains_key(rel) {
-                    let p = path.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-                    if fs::remove_file(p).is_ok() {
-                        actions.push(("removed".to_string(), rel.clone()));
-                    }
-                }
+    for rel in extras {
+        if aborted(progress) {
+            return err(CANCELLED);
+        }
+        if delete_extra {
+            let p = path.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+            if fs::remove_file(p).is_ok() {
+                actions.push(("removed".to_string(), rel));
             }
+        } else {
+            actions.push(("kept".to_string(), rel));
+        }
+        if let Some(p) = progress {
+            p.tick();
         }
     }
     Ok((actions, created))
@@ -1367,7 +1495,7 @@ pub fn project_stats(pid: &str, branch: Option<&str>) -> ProjectStats {
     if let Some(p) = &proj {
         if Path::new(&p.path).is_dir() {
             let hints = snaps.last().map(|s| s.files.clone());
-            if let Ok((files, _)) = collect(pid, false, hints.as_ref(), None) {
+            if let Ok((files, _, _)) = collect(pid, false, hints.as_ref(), None) {
                 live = files;
             }
         }
@@ -1512,5 +1640,112 @@ pub fn ago(ts: f64) -> String {
     } else {
         let days = (diff / 86400.0) as i64;
         format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// TIMECAPSULE_HOME is process wide, so tests that change it take turns.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TempHome {
+        root: PathBuf,
+    }
+
+    impl TempHome {
+        fn new(tag: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "timecapsule-test-{}-{}-{}",
+                std::process::id(),
+                tag,
+                (now() * 1000.0) as u64
+            ));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(root.join("home")).unwrap();
+            std::env::set_var("TIMECAPSULE_HOME", root.join("home"));
+            Self { root }
+        }
+
+        fn project(&self) -> PathBuf {
+            let path = self.root.join("project");
+            fs::create_dir_all(&path).unwrap();
+            path
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            std::env::remove_var("TIMECAPSULE_HOME");
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn scan_project_reports_files_over_the_limit() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = TempHome::new("scan");
+        let project = tmp.project();
+        fs::write(project.join("small.txt"), b"hello").unwrap();
+        fs::write(project.join("big.bin"), vec![7u8; 4096]).unwrap();
+        fs::create_dir_all(project.join("node_modules")).unwrap();
+        fs::write(project.join("node_modules").join("dep.js"), b"x").unwrap();
+        save_settings(&Settings {
+            max_file: 1024,
+            ..Default::default()
+        });
+
+        let report = scan_project(&project);
+        let names: Vec<&str> = report.files.iter().map(|f| f.0.as_str()).collect();
+        assert_eq!(names, vec!["small.txt"]);
+        assert_eq!(report.skipped.len(), 1);
+        match report.skipped[0].reason {
+            SkipReason::TooLarge { size, limit } => {
+                assert_eq!(size, 4096);
+                assert_eq!(limit, 1024);
+            }
+            SkipReason::TooManyFiles => panic!("wrong skip reason"),
+        }
+        assert!(!skip_summary(&report.skipped).is_empty());
+    }
+
+    #[test]
+    fn restore_can_keep_or_remove_files_outside_the_snapshot() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = TempHome::new("restore");
+        let folder = tmp.project();
+        fs::write(folder.join("keep.txt"), b"one").unwrap();
+        fs::write(folder.join("gone.txt"), b"two").unwrap();
+        let proj = add_project(folder.to_str().unwrap(), Some("test")).unwrap();
+        let snap = take_snapshot(&proj.id, "", "first", "manual", None).unwrap();
+
+        fs::write(folder.join("keep.txt"), b"edited").unwrap();
+        fs::write(folder.join("newer.txt"), b"later").unwrap();
+
+        // keep_newer: newer.txt must survive, older content must come back.
+        let (actions, _) = restore(&proj.id, &snap, true, None, false, false, None).unwrap();
+        assert!(folder.join("newer.txt").is_file());
+        assert_eq!(fs::read_to_string(folder.join("keep.txt")).unwrap(), "one");
+        assert!(folder.join("gone.txt").is_file());
+        assert!(actions
+            .iter()
+            .any(|(kind, rel)| kind == "kept" && rel == "newer.txt"));
+
+        // delete_extra (the historical behaviour) removes it.
+        let (actions, _) = restore(&proj.id, &snap, true, None, false, true, None).unwrap();
+        assert!(!folder.join("newer.txt").exists());
+        assert!(actions
+            .iter()
+            .any(|(kind, rel)| kind == "removed" && rel == "newer.txt"));
+
+        // A single file restore leaves everything else alone.
+        fs::write(folder.join("keep.txt"), b"changed again").unwrap();
+        let rels = vec!["keep.txt".to_string()];
+        let (actions, _) =
+            restore(&proj.id, &snap, false, Some(&rels), false, true, None).unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(fs::read_to_string(folder.join("keep.txt")).unwrap(), "one");
     }
 }

@@ -111,12 +111,12 @@ impl App {
         p.rect_filled(
             swap_rect,
             10,
-            if swap.hovered() { Color32::from_rgb(0x16, 0x34, 0x4d) } else { Color32::from_rgb(0x0e, 0x21, 0x35) },
+            if swap.hovered() { Color32::from_rgb(0x16, 0x34, 0x4d) } else { SURF2 },
         );
         p.rect_stroke(
             swap_rect,
             10,
-            Stroke::new(1.0, Color32::from_rgb(0x1b, 0x3f, 0x5c)),
+            Stroke::new(1.0, BORDER2),
             StrokeKind::Inside,
         );
         p.text(
@@ -279,7 +279,7 @@ impl App {
         let p = &__painter;
                         let active = self.compare.active.as_deref() == Some(rel.as_str());
                         if active {
-                            p.rect_filled(r, 9, Color32::from_rgb(0x10, 0x29, 0x3f));
+                            p.rect_filled(r, 9, SURF2);
                             p.rect_stroke(
                                 r,
                                 9,

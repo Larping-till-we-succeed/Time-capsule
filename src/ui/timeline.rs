@@ -95,7 +95,7 @@ impl App {
                 Pos2::new(x - w, rect.top() + 12.0),
                 Vec2::new(w, 22.0),
             );
-            p.rect_filled(chip_rect, 8, Color32::from_rgb(0x0f, 0x24, 0x37));
+            p.rect_filled(chip_rect, 8, SURF2);
             p.rect_stroke(
                 chip_rect,
                 8,
@@ -123,12 +123,12 @@ impl App {
         p.rect_filled(
             new_branch_rect,
             8,
-            if hovered { Color32::from_rgb(0x14, 0x2c, 0x44) } else { Color32::from_rgb(0x0e, 0x21, 0x35) },
+            if hovered { Color32::from_rgb(0x14, 0x2c, 0x44) } else { SURF2 },
         );
         p.rect_stroke(
             new_branch_rect,
             8,
-            Stroke::new(1.0, if hovered { Color32::from_rgb(0x2a, 0x5d, 0x85) } else { Color32::from_rgb(0x1b, 0x3f, 0x5c) }),
+            Stroke::new(1.0, if hovered { BORDER2 } else { BORDER2 }),
             StrokeKind::Inside,
         );
         p.text(
@@ -244,11 +244,11 @@ impl App {
         let main_y = lane_y(0);
         p.line_segment(
             [Pos2::new(left, main_y - 5.0), Pos2::new(left, main_y + 5.0)],
-            Stroke::new(1.0, Color32::from_rgb(0x1c, 0x40, 0x5e)),
+            Stroke::new(1.0, BORDER2),
         );
         p.line_segment(
             [Pos2::new(right, main_y - 5.0), Pos2::new(right, main_y + 5.0)],
-            Stroke::new(1.0, Color32::from_rgb(0x1c, 0x40, 0x5e)),
+            Stroke::new(1.0, BORDER2),
         );
         p.text(
             Pos2::new(left, rect.bottom() - 2.0),
@@ -432,7 +432,7 @@ impl App {
             if on {
                 alpha(ACCENT, 36)
             } else {
-                Color32::from_rgb(0x0e, 0x21, 0x35)
+                SURF2
             },
         );
         p.rect_stroke(
@@ -443,7 +443,7 @@ impl App {
                 if on || pin_resp.hovered() {
                     ACCENT
                 } else {
-                    Color32::from_rgb(0x1b, 0x3f, 0x5c)
+                    BORDER2
                 },
             ),
             StrokeKind::Inside,
@@ -569,7 +569,7 @@ impl App {
                             ui.interact(r, ui.id().with(("row", &snap.id)), Sense::click());
                         let selected = self.timeline.selected.as_deref() == Some(snap.id.as_str());
                         if selected {
-                            p.rect_filled(r, egui::CornerRadius::same(10), Color32::from_rgb(0x10, 0x29, 0x3f));
+                            p.rect_filled(r, egui::CornerRadius::same(10), SURF2);
                             p.rect_stroke(
                                 r,
                                 10,
@@ -599,7 +599,7 @@ impl App {
                             if selected { ACCENT } else { Color32::from_rgb(0x2f, 0x55, 0x75) },
                         );
                         if selected {
-                            p.circle_filled(center, 2.0, Color32::from_rgb(0x10, 0x29, 0x3f));
+                            p.circle_filled(center, 2.0, SURF2);
                         }
                         let tx = r.left() + 46.0;
                         p.text(
@@ -774,7 +774,7 @@ impl App {
             if pin_resp.hovered() {
                 Color32::from_rgb(0x14, 0x2c, 0x44)
             } else {
-                Color32::from_rgb(0x0e, 0x21, 0x35)
+                SURF2
             },
         );
         p.rect_stroke(
@@ -785,7 +785,7 @@ impl App {
                 if snap.pinned {
                     Color32::from_rgb(0x4a, 0x3d, 0x18)
                 } else {
-                    Color32::from_rgb(0x1b, 0x3f, 0x5c)
+                    BORDER2
                 },
             ),
             StrokeKind::Inside,
@@ -818,13 +818,11 @@ impl App {
             regular(12.0),
             MUTED,
         );
-        let title = if snap.title.is_empty() { "Untitled moment" } else { &snap.title };
         p.text(
             Pos2::new(head.left() + 18.0, head.top() + 56.0),
             Align2::LEFT_TOP,
             format!(
-                "{}  ·  {} files  ·  {}",
-                title,
+                "{} files  ·  {}",
                 snap.count,
                 store::fmt_bytes(snap.bytes)
             ),
@@ -862,23 +860,54 @@ impl App {
             common::paint_chip(p, Pos2::new(cx, chip_y), "vs previous", MUTED, None);
         }
 
-        // note card
+        // title + note card
         let note_card = Rect::from_min_size(
             Pos2::new(rect.left(), head.bottom() + 12.0),
-            Vec2::new(rect.width(), 142.0),
+            Vec2::new(rect.width(), 206.0),
         );
         card(p, note_card, 16, SURF);
         p.text(
-            Pos2::new(note_card.left() + 18.0, note_card.top() + 12.0),
+            Pos2::new(note_card.left() + 18.0, note_card.top() + 10.0),
+            Align2::LEFT_TOP,
+            "Title",
+            bold(14.0),
+            TEXT,
+        );
+        p.text(
+            Pos2::new(note_card.left() + 66.0, note_card.top() + 13.0),
+            Align2::LEFT_TOP,
+            "shown in the timeline",
+            regular(11.5),
+            MUTED,
+        );
+        let title_editor = Rect::from_min_max(
+            Pos2::new(note_card.left() + 18.0, note_card.top() + 32.0),
+            Pos2::new(note_card.right() - 18.0, note_card.top() + 58.0),
+        );
+        common::area(ui, title_editor, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.timeline.title)
+                    .hint_text(
+                        egui::RichText::new("Untitled moment")
+                            .font(regular(13.0))
+                            .color(DIM),
+                    )
+                    .font(regular(13.0))
+                    .desired_width(title_editor.width()),
+            );
+        });
+        p.text(
+            Pos2::new(note_card.left() + 18.0, note_card.top() + 68.0),
             Align2::LEFT_TOP,
             "Note",
             bold(14.0),
             TEXT,
         );
-        let dirty = self.timeline.note.trim() != snap.note.trim();
+        let dirty = self.timeline.note.trim() != snap.note.trim()
+            || self.timeline.title.trim() != snap.title.trim();
         self.timeline.note_dirty = dirty;
         p.text(
-            Pos2::new(note_card.left() + 70.0, note_card.top() + 15.0),
+            Pos2::new(note_card.left() + 70.0, note_card.top() + 71.0),
             Align2::LEFT_TOP,
             if !self.timeline.note_status.is_empty() {
                 self.timeline.note_status.clone()
@@ -891,18 +920,31 @@ impl App {
             MUTED,
         );
         let save_rect = Rect::from_min_size(
-            Pos2::new(note_card.right() - 18.0 - 100.0, note_card.top() + 8.0),
-            Vec2::new(100.0, 30.0),
+            Pos2::new(note_card.right() - 18.0 - 118.0, note_card.top() + 64.0),
+            Vec2::new(118.0, 30.0),
         );
         let mut save_clicked = false;
         common::area(ui, save_rect, |ui| {
-            if button(ui, "Save note", Btn::Ghost, dirty).clicked() {
+            if button(ui, "Save changes", Btn::Ghost, dirty).clicked() {
                 save_clicked = true;
             }
         });
+        let skip_note = if self.skipped.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Last capture: {} — change the limit in Settings.",
+                store::skip_summary(&self.skipped)
+            )
+        };
+        let editor_bottom = if skip_note.is_empty() {
+            note_card.bottom() - 12.0
+        } else {
+            note_card.bottom() - 34.0
+        };
         let editor = Rect::from_min_max(
-            Pos2::new(note_card.left() + 18.0, note_card.top() + 40.0),
-            Pos2::new(note_card.right() - 18.0, note_card.bottom() - 12.0),
+            Pos2::new(note_card.left() + 18.0, note_card.top() + 94.0),
+            Pos2::new(note_card.right() - 18.0, editor_bottom),
         );
         common::area(ui, editor, |ui| {
             ui.add(
@@ -913,10 +955,19 @@ impl App {
                             .color(DIM),
                     )
                     .font(regular(13.0))
-                    .desired_rows(3)
+                    .desired_rows(2)
                     .desired_width(editor.width()),
             );
         });
+        if !skip_note.is_empty() {
+            p.text(
+                Pos2::new(note_card.left() + 18.0, note_card.bottom() - 22.0),
+                Align2::LEFT_TOP,
+                elide(p, &skip_note, &regular(11.5), note_card.width() - 36.0),
+                regular(11.5),
+                Color32::from_rgb(0xf2, 0xc4, 0x5f),
+            );
+        }
 
         // changes card fills the rest
         let changes = Rect::from_min_max(
@@ -1016,11 +1067,11 @@ impl App {
                         );
                         let __painter = ui.painter().with_clip_rect(rect);
     let p = &__painter;
-                        p.rect_filled(r, 11, Color32::from_rgb(0x0d, 0x1e, 0x2f));
+                        p.rect_filled(r, 11, SURF2);
                         p.rect_stroke(
                             r,
                             11,
-                            Stroke::new(1.0, Color32::from_rgb(0x14, 0x31, 0x4a)),
+                            Stroke::new(1.0, BORDER),
                             StrokeKind::Inside,
                         );
                         let color = status_color(kind);
@@ -1078,14 +1129,14 @@ impl App {
                         p.rect_filled(
                             btn,
                             7,
-                            if hovered { Color32::from_rgb(0x0e, 0x2a, 0x44) } else { Color32::from_rgb(0x10, 0x2a, 0x42) },
+                            if hovered { SURF2 } else { Color32::from_rgb(0x10, 0x2a, 0x42) },
                         );
                         p.rect_stroke(
                             btn,
                             7,
                             Stroke::new(
                                 1.0,
-                                if hovered { ACCENT } else { Color32::from_rgb(0x1c, 0x40, 0x5e) },
+                                if hovered { ACCENT } else { BORDER2 },
                             ),
                             StrokeKind::Inside,
                         );
@@ -1150,7 +1201,7 @@ impl App {
         });
 
         if save_clicked {
-            self.save_note();
+            self.save_note_and_title();
         }
         if compare_clicked {
             if let Some(prev) = prev {

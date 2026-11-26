@@ -73,6 +73,7 @@ pub struct TimelineState {
     pub note_sid: Option<String>,
     pub note_dirty: bool,
     pub note_status: String,
+    pub title: String,
     pub filter: String,
 }
 
@@ -88,6 +89,7 @@ impl TimelineState {
         self.note_sid = None;
         self.note_dirty = false;
         self.note_status.clear();
+        self.title.clear();
         self.filter.clear();
         self.pinned_only = false;
     }
@@ -111,6 +113,10 @@ pub struct SettingsForm {
     pub enabled: bool,
     pub minutes: i64,
     pub only_changes: bool,
+    /// Largest file a snapshot may capture, in megabytes.
+    pub max_mb: u64,
+    /// Comma separated names or globs to leave out of every snapshot.
+    pub extra_ignore: String,
     pub saved_at: Option<f64>,
 }
 
@@ -140,6 +146,7 @@ pub enum Dialog {
         whole: bool,
         rel: Option<String>,
         safety: bool,
+        keep_newer: bool,
     },
     Confirm {
         title: String,
@@ -151,12 +158,26 @@ pub enum Dialog {
         title: String,
         text: String,
     },
+    RenameProject {
+        pid: String,
+        name: String,
+    },
+    ConfirmProject {
+        pid: String,
+        name: String,
+    },
 }
 
 pub enum TaskOutcome {
     Snapshot {
         pid: String,
-        result: store::Result<Snapshot>,
+        result: store::Result<(Snapshot, Vec<store::Skipped>)>,
+    },
+    Restore {
+        pid: String,
+        whole: bool,
+        rel: Option<String>,
+        result: store::Result<(Vec<(String, String)>, Option<Snapshot>)>,
     },
     Gc {
         dry_run: bool,
@@ -200,10 +221,14 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub toast: Option<(String, String, f64)>,
     pub focus_search: bool,
+    /// Whether the left navigation panel is shown (the top bar's menu button).
+    pub sidebar_open: bool,
     pub project_head: Option<(String, String, usize, String, String)>,
     pub status_storage: (u64, u64),
     pub gc_preview: Option<store::GcReport>,
     pub verify_report: Option<store::VerifyReport>,
+    /// Files the last capture had to leave out; shown in the snapshot detail.
+    pub skipped: Vec<store::Skipped>,
     pub task: Option<Task>,
 }
 
@@ -211,7 +236,13 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_fonts(&cc.egui_ctx);
         install_style(&cc.egui_ctx);
+        let cfg = store::settings();
         let auto = store::autosave_config();
+        let max_file = if cfg.max_file == 0 {
+            store::MAX_FILE
+        } else {
+            cfg.max_file
+        };
         let mut app = Self {
             page: Page::Dashboard,
             projects: Vec::new(),
@@ -223,6 +254,8 @@ impl App {
                 enabled: auto.enabled,
                 minutes: auto.minutes,
                 only_changes: auto.only_changes,
+                max_mb: (max_file / (1024 * 1024)).clamp(1, 200),
+                extra_ignore: cfg.extra_ignore.clone(),
                 saved_at: None,
             },
             last_auto: None,
@@ -238,10 +271,12 @@ impl App {
             dialog: None,
             toast: None,
             focus_search: false,
+            sidebar_open: true,
             project_head: None,
             status_storage: (0, 0),
             gc_preview: None,
             verify_report: None,
+            skipped: Vec::new(),
             task: None,
         };
         app.reset_autosave_clock();
@@ -341,6 +376,16 @@ impl App {
             Page::Compare => self.rebuild_compare(None, None),
             Page::Stats => self.rebuild_stats(),
             Page::Settings => {}
+        }
+    }
+
+    pub fn page_title(&self) -> &'static str {
+        match self.page {
+            Page::Dashboard => "Dashboard",
+            Page::Timeline => "Timeline",
+            Page::Compare => "Compare",
+            Page::Stats => "Statistics",
+            Page::Settings => "Settings",
         }
     }
 
@@ -525,6 +570,7 @@ impl App {
             self.timeline.detail = None;
             self.timeline.prev = None;
             self.timeline.note.clear();
+            self.timeline.title.clear();
             self.timeline.note_sid = None;
         }
     }
@@ -548,6 +594,7 @@ impl App {
         };
         if self.timeline.note_sid.as_deref() != Some(sid) {
             self.timeline.note = snap.note.clone();
+            self.timeline.title = snap.title.clone();
             self.timeline.note_sid = Some(sid.to_string());
             self.timeline.note_dirty = false;
         }
@@ -615,7 +662,8 @@ impl App {
     fn handle_task(&mut self, outcome: TaskOutcome) {
         match outcome {
             TaskOutcome::Snapshot { result, .. } => match result {
-                Ok(snap) => {
+                Ok((snap, skipped)) => {
+                    self.skipped = skipped;
                     self.page = Page::Timeline;
                     self.refresh(Some(snap.id));
                     self.notify(
@@ -660,6 +708,83 @@ impl App {
                     }
                 }
             },
+            TaskOutcome::Restore {
+                pid,
+                whole,
+                rel,
+                result,
+            } => {
+                if self.pid.as_deref() == Some(pid.as_str()) {
+                    self.refresh(None);
+                }
+                match result {
+                    Ok((actions, safety_snap)) => {
+                        let count = |kind: &str| {
+                            actions.iter().filter(|(k, _)| k == kind).count()
+                        };
+                        let restored = count("restored");
+                        let removed = count("removed");
+                        let kept = count("kept");
+                        let text = if whole {
+                            let mut text = format!(
+                                "{} file{} restored.{}{}{}",
+                                restored,
+                                if restored == 1 { "" } else { "s" },
+                                if removed > 0 {
+                                    format!(
+                                        "\n{} file{} this snapshot does not contain were removed.",
+                                        removed,
+                                        if removed == 1 { "" } else { "s" }
+                                    )
+                                } else {
+                                    String::new()
+                                },
+                                if kept > 0 {
+                                    format!(
+                                        "\n{} newer file{} were kept.",
+                                        kept,
+                                        if kept == 1 { "" } else { "s" }
+                                    )
+                                } else {
+                                    String::new()
+                                },
+                                if safety_snap.is_some() {
+                                    "\nThe previous state was kept as a safety snapshot."
+                                } else {
+                                    ""
+                                }
+                            );
+                            text.shrink_to_fit();
+                            text
+                        } else {
+                            let name = rel.unwrap_or_default();
+                            if actions.is_empty() {
+                                format!("{} already matches this snapshot.", name)
+                            } else {
+                                format!("{} restored.", name)
+                            }
+                        };
+                        self.dialog = Some(Dialog::Message {
+                            title: "Restored".into(),
+                            text,
+                        });
+                    }
+                    Err(e) => {
+                        let text = e.to_string();
+                        if text == store::CANCELLED {
+                            self.notify(
+                                "Restore cancelled",
+                                "Files already replaced stay as they are; the safety snapshot holds the state from before.",
+                            );
+                        } else {
+                            self.dialog = Some(Dialog::Message {
+                                title: "TimeCapsule".into(),
+                                text: format!("Restore failed:\n{}", e),
+                            });
+                        }
+                    }
+                }
+            }
             TaskOutcome::Verify(report) => {
                 self.verify_report = Some(report);
                 self.gc_preview = None;
@@ -841,6 +966,13 @@ impl App {
         self.settings.enabled = cfg.auto_save;
         self.settings.minutes = cfg.auto_save_minutes.clamp(1, 1440);
         self.settings.only_changes = cfg.auto_save_only_changes;
+        let max_file = if cfg.max_file == 0 {
+            store::MAX_FILE
+        } else {
+            cfg.max_file
+        };
+        self.settings.max_mb = (max_file / (1024 * 1024)).clamp(1, 200);
+        self.settings.extra_ignore = cfg.extra_ignore.clone();
     }
 
     pub fn save_settings(&mut self) {
@@ -848,6 +980,8 @@ impl App {
         cfg.auto_save = self.settings.enabled;
         cfg.auto_save_minutes = self.settings.minutes.clamp(1, 1440);
         cfg.auto_save_only_changes = self.settings.only_changes;
+        cfg.max_file = self.settings.max_mb.clamp(1, 200) * 1024 * 1024;
+        cfg.extra_ignore = self.settings.extra_ignore.trim().to_string();
         store::save_settings(&cfg);
         self.auto = store::autosave_config();
         self.reset_autosave_clock();
@@ -906,13 +1040,18 @@ impl App {
 
     pub fn dialog_new_snapshot(&mut self) {
         let Some(proj) = self.project() else { return };
-        let files = store::scan_project(std::path::Path::new(&proj.path));
-        let total: u64 = files.iter().map(|f| f.2).sum();
-        let preview = format!(
+        let report = store::scan_project(std::path::Path::new(&proj.path));
+        let mut preview = format!(
             "{} tracked files · {} will be captured. Existing content is reused from the project store, so repeated snapshots stay small.",
-            files.len(),
-            store::fmt_bytes(total)
+            report.files.len(),
+            store::fmt_bytes(report.total_bytes())
         );
+        if !report.skipped.is_empty() {
+            preview.push_str(&format!(
+                "\n{} — adjust the limit or the ignore patterns in Settings.",
+                store::skip_summary(&report.skipped)
+            ));
+        }
         self.dialog = Some(Dialog::NewSnapshot {
             title: String::new(),
             note: String::new(),
@@ -990,6 +1129,7 @@ impl App {
                     whole,
                     rel,
                     safety: true,
+                    keep_newer: false,
                 });
             }
             Err(e) => {
@@ -1001,51 +1141,49 @@ impl App {
         }
     }
 
+    /// Hand the restore to a worker thread so a large project cannot freeze the
+    /// window; `handle_task` reports the result when it lands.
     pub fn complete_restore(
         &mut self,
         sid: &str,
         whole: bool,
         rel: Option<&str>,
         safety: bool,
+        keep_newer: bool,
     ) {
+        if self.busy() {
+            self.notify(
+                "Still working",
+                "Wait for the current job to finish, or cancel it in the status bar.",
+            );
+            return;
+        }
         let Some(pid) = self.pid.clone() else { return };
         let Some(snap) = store::get_snapshot(&pid, sid) else { return };
         let rels = rel.map(|r| vec![r.to_string()]);
-        match store::restore(&pid, &snap, whole, rels.as_deref(), safety) {
-            Ok((actions, safety_snap)) => {
-                self.refresh(None);
-                let text = if whole {
-                    format!(
-                        "{} file{} restored from {}.{}",
-                        actions.len(),
-                        if actions.len() == 1 { "" } else { "s" },
-                        store::fmt_stamp(snap.ts),
-                        if safety_snap.is_some() {
-                            "\nThe previous state was kept as a safety snapshot."
-                        } else {
-                            ""
-                        }
-                    )
-                } else {
-                    format!(
-                        "{}{}",
-                        rel.unwrap_or(""),
-                        if actions.is_empty() {
-                            " already matches this snapshot."
-                        } else {
-                            " restored."
-                        }
-                    )
-                };
-                self.dialog = Some(Dialog::Message { title: "Restored".into(), text });
+        let rel = rel.map(|r| r.to_string());
+        let label = match &rel {
+            Some(name) => format!("Restoring {}", name),
+            None => format!("Restoring snapshot {}", sid),
+        };
+        let worker_pid = pid.clone();
+        self.spawn_task(label, move |progress| {
+            let result = store::restore(
+                &worker_pid,
+                &snap,
+                whole,
+                rels.as_deref(),
+                safety,
+                !keep_newer,
+                Some(progress),
+            );
+            TaskOutcome::Restore {
+                pid: worker_pid,
+                whole,
+                rel,
+                result,
             }
-            Err(e) => {
-                self.dialog = Some(Dialog::Message {
-                    title: "TimeCapsule".into(),
-                    text: format!("Restore failed:\n{}", e),
-                });
-            }
-        }
+        });
     }
 
     pub fn confirm_delete(&mut self, sid: &str) {
@@ -1120,16 +1258,49 @@ impl App {
         self.refresh(None);
     }
 
-    pub fn save_note(&mut self) {
+    pub fn save_note_and_title(&mut self) {
         let Some(pid) = self.pid.clone() else { return };
         let Some(sid) = self.timeline.note_sid.clone() else { return };
         let note = self.timeline.note.clone();
-        if let Some(updated) = store::update_snapshot(&pid, &sid, Some(&note), None) {
+        let title = self.timeline.title.clone();
+        if let Some(updated) = store::update_snapshot(&pid, &sid, Some(&note), Some(&title)) {
             self.timeline.detail = Some(updated);
             self.timeline.note_dirty = false;
-            self.timeline.note_status = "saved".into();
             self.refresh(Some(sid));
+            self.timeline.note_status = "saved".into();
         }
+    }
+
+    pub fn rename_project(&mut self, pid: &str, name: &str) {
+        if name.trim().is_empty() {
+            return;
+        }
+        store::rename_project(pid, name);
+        self.refresh(None);
+        self.notify("Project renamed", name.trim().to_string());
+    }
+
+    /// Forget a project inside TimeCapsule. The folder on disk is never touched.
+    pub fn remove_project(&mut self, pid: &str) {
+        let name = store::get_project(pid)
+            .map(|p| p.name)
+            .unwrap_or_else(|| "The project".into());
+        store::remove_project(pid);
+        if self.pid.as_deref() == Some(pid) {
+            self.pid = None;
+            self.page = Page::Dashboard;
+            self.timeline.reset();
+            self.compare = CompareState::default();
+            self.stats = None;
+        }
+        self.refresh(None);
+        self.notify(
+            "Project removed",
+            format!(
+                "{} was removed from TimeCapsule. Files in its folder are untouched.",
+                name
+            ),
+        );
     }
 
     pub fn create_project(&mut self, path: &str, name: &str, create: bool) {
@@ -1158,6 +1329,7 @@ impl App {
         }
     }
 
+
     // -------------------------------------------------------------- shortcuts
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         let mut events: Vec<&str> = Vec::new();
@@ -1180,6 +1352,9 @@ impl App {
             if i.consume_key(Modifiers::CTRL, Key::K) {
                 events.push("search");
             }
+            if i.consume_key(Modifiers::CTRL, Key::B) {
+                events.push("sidebar");
+            }
         });
         for ev in events {
             match ev {
@@ -1192,6 +1367,7 @@ impl App {
                     self.select_page(Page::Dashboard);
                     self.focus_search = true;
                 }
+                "sidebar" => self.sidebar_open = !self.sidebar_open,
                 _ => {}
             }
         }
@@ -1214,32 +1390,18 @@ impl eframe::App for App {
             Duration::from_secs(1)
         });
 
-        // Background: a deep space gradient across the whole window.
-        let screen = ctx.screen_rect();
+        // Flat app background; the sidebar paints its own panel over it.
         let painter = ctx.layer_painter(egui::LayerId::background());
-        painter.rect_filled(screen, 0, BG);
-        let mid = screen.top() + screen.height() * 0.5;
-        gradient_rect(
-            &painter,
-            Rect::from_min_max(screen.min, Pos2::new(screen.right(), mid)),
-            egui::Color32::from_rgb(0x0b, 0x24, 0x37),
-            egui::Color32::from_rgb(0x06, 0x12, 0x20),
-        );
-        gradient_rect(
-            &painter,
-            Rect::from_min_max(Pos2::new(screen.left(), mid), screen.max),
-            egui::Color32::from_rgb(0x06, 0x12, 0x20),
-            BG,
-        );
+        painter.rect_filled(ctx.screen_rect(), 0, BG);
 
         egui::TopBottomPanel::bottom("statusbar")
-            .exact_height(46.0)
-            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(0x04, 0x0a, 0x12)))
+            .exact_height(42.0)
+            .frame(egui::Frame::NONE.fill(SIDEBAR))
             .show(ctx, |ui| {
                 ui.painter().rect_filled(
                     Rect::from_min_size(ui.min_rect().left_top(), Vec2::new(ui.available_width(), 1.0)),
                     0,
-                    egui::Color32::from_rgb(0x0f, 0x24, 0x37),
+                    BORDER,
                 );
                 self.ui_statusbar(ui);
             });
@@ -1248,25 +1410,28 @@ impl eframe::App for App {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let full = ui.max_rect();
-                let side_rect = Rect::from_min_size(full.min, Vec2::new(252.0, full.height()));
-                ui.painter().rect_filled(side_rect, 0, SIDEBAR);
-                ui.painter().rect_filled(
-                    Rect::from_min_size(
-                        Pos2::new(side_rect.right() - 1.0, side_rect.top()),
-                        Vec2::new(1.0, side_rect.height()),
-                    ),
-                    0,
-                    egui::Color32::from_rgb(0x0f, 0x24, 0x37),
-                );
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(side_rect.shrink2(Vec2::new(16.0, 14.0))),
-                    |ui| self.ui_sidebar(ui),
-                );
+                let side_w = if self.sidebar_open { 248.0 } else { 0.0 };
+                if side_w > 0.0 {
+                    let side_rect = Rect::from_min_size(full.min, Vec2::new(side_w, full.height()));
+                    ui.painter().rect_filled(side_rect, 0, SIDEBAR);
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(
+                            Pos2::new(side_rect.right() - 1.0, side_rect.top()),
+                            Vec2::new(1.0, side_rect.height()),
+                        ),
+                        0,
+                        BORDER,
+                    );
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(side_rect.shrink2(Vec2::new(16.0, 18.0))),
+                        |ui| self.ui_sidebar(ui),
+                    );
+                }
 
                 let right = Rect::from_min_max(
-                    Pos2::new(side_rect.right() + 22.0, full.top() + 18.0),
-                    Pos2::new(full.right() - 22.0, full.bottom() - 12.0),
+                    Pos2::new(full.left() + side_w + if side_w > 0.0 { 24.0 } else { 20.0 }, full.top() + 14.0),
+                    Pos2::new(full.right() - 24.0, full.bottom() - 14.0),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| {
                     ui.spacing_mut().item_spacing = Vec2::new(0.0, 12.0);

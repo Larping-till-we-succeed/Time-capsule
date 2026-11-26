@@ -12,9 +12,17 @@ enum Action {
     NewProject { path: String, name: String, create: bool },
     NewSnapshot { title: String, note: String },
     NewBranch { name: String, from: String },
-    Restore { sid: String, whole: bool, rel: Option<String>, safety: bool },
+    Restore {
+        sid: String,
+        whole: bool,
+        rel: Option<String>,
+        safety: bool,
+        keep_newer: bool,
+    },
     ExportRestore(String),
     Delete(String),
+    RenameProject { pid: String, name: String },
+    RemoveProject(String),
 }
 
 fn modal(
@@ -268,7 +276,15 @@ impl App {
                     }
                 });
             }
-            Dialog::Restore { sid, write, delete, whole, rel, safety } => {
+            Dialog::Restore {
+                sid,
+                write,
+                delete,
+                whole,
+                rel,
+                safety,
+                keep_newer,
+            } => {
                 let stamp = self
                     .pid
                     .as_ref()
@@ -284,6 +300,7 @@ impl App {
                 let whole = *whole;
                 let rel_opt = rel.clone();
                 let mut safety_val = *safety;
+                let mut keep_newer_val = *keep_newer;
                 let mut write_clicked = false;
                 let mut export_clicked = false;
                 let delete_clicked = false;
@@ -316,9 +333,10 @@ impl App {
                         common::status_pill(ui, "deleted");
                         ui.label(
                             RichText::new(format!(
-                                "{} file{} will be removed",
+                                "{} file{} will be {}",
                                 delete.len(),
-                                if delete.len() == 1 { "" } else { "s" }
+                                if delete.len() == 1 { "" } else { "s" },
+                                if keep_newer_val { "kept" } else { "removed" }
                             ))
                             .font(regular(12.5))
                             .color(TEXT),
@@ -326,7 +344,7 @@ impl App {
                     });
                     Frame::NONE
                         .fill(SURF)
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(0x14, 0x30, 0x49)))
+                        .stroke(Stroke::new(1.0, BORDER))
                         .corner_radius(12)
                         .inner_margin(Margin::symmetric(12, 10))
                         .show(ui, |ui| {
@@ -349,7 +367,11 @@ impl App {
                                     }
                                     for rel in delete.iter().take(80) {
                                         ui.label(
-                                            RichText::new(format!("✕  {}", rel))
+                                            RichText::new(format!(
+                                                "{}  {}",
+                                                if keep_newer_val { "•" } else { "✕" },
+                                                rel
+                                            ))
                                                 .font(regular(12.0))
                                                 .color(MUTED),
                                         );
@@ -384,6 +406,16 @@ impl App {
                         .font(bold(13.0))
                         .color(Color32::from_rgb(0xcf, 0xdf, 0xf0)),
                     );
+                    if whole && !delete.is_empty() {
+                        ui.checkbox(
+                            &mut keep_newer_val,
+                            RichText::new(
+                                "Keep files that this snapshot does not contain (do not delete them)",
+                            )
+                            .font(bold(13.0))
+                            .color(Color32::from_rgb(0xcf, 0xdf, 0xf0)),
+                        );
+                    }
                     ui.add_space(2.0);
                     ui.horizontal(|ui| {
                         ui.label(
@@ -405,12 +437,14 @@ impl App {
                     let _ = delete_clicked;
                 });
                 *safety = safety_val;
+                *keep_newer = keep_newer_val;
                 if write_clicked {
                     action = Some(Action::Restore {
                         sid: sid.clone(),
                         whole,
                         rel: rel_opt.clone(),
                         safety: safety_val,
+                        keep_newer: keep_newer_val,
                     });
                     close = true;
                 }
@@ -431,6 +465,51 @@ impl App {
                     }
                     if ok {
                         action = Some(Action::Delete(sid.clone()));
+                        close = true;
+                    }
+                });
+            }
+            Dialog::RenameProject { pid, name } => {
+                let pid = pid.clone();
+                modal(ctx, "dlg_rename_project", 460.0, |ui| {
+                    heading(ui, "Rename project");
+                    field_caption(ui, "NAME");
+                    ui.add(egui::TextEdit::singleline(name).font(regular(13.0)));
+                    sub_text(
+                        ui,
+                        "Only the name inside TimeCapsule changes; the folder on disk keeps its path.",
+                    );
+                    let (cancel, ok) = footer(ui, "Save name", false);
+                    if cancel {
+                        close = true;
+                    }
+                    if ok && !name.trim().is_empty() {
+                        action = Some(Action::RenameProject {
+                            pid: pid.clone(),
+                            name: name.clone(),
+                        });
+                        close = true;
+                    }
+                });
+            }
+            Dialog::ConfirmProject { pid, name } => {
+                let pid = pid.clone();
+                let name = name.clone();
+                modal(ctx, "dlg_confirm_project", 470.0, |ui| {
+                    heading(ui, "Remove project");
+                    sub_text(
+                        ui,
+                        &format!(
+                            "Remove “{}” from TimeCapsule? Its snapshots and stored file contents are deleted, so its history is gone. The project folder on disk is not touched.",
+                            name
+                        ),
+                    );
+                    let (cancel, ok) = footer(ui, "Remove project", true);
+                    if cancel {
+                        close = true;
+                    }
+                    if ok {
+                        action = Some(Action::RemoveProject(pid.clone()));
                         close = true;
                     }
                 });
@@ -464,11 +543,17 @@ impl App {
                 }
                 Action::NewSnapshot { title, note } => self.capture_snapshot(&title, &note),
                 Action::NewBranch { name, from } => self.create_branch(&name, &from),
-                Action::Restore { sid, whole, rel, safety } => {
-                    self.complete_restore(&sid, whole, rel.as_deref(), safety)
-                }
+                Action::Restore {
+                    sid,
+                    whole,
+                    rel,
+                    safety,
+                    keep_newer,
+                } => self.complete_restore(&sid, whole, rel.as_deref(), safety, keep_newer),
                 Action::Delete(sid) => self.delete_snapshot(&sid),
                 Action::ExportRestore(sid) => self.export_restore(&sid),
+                Action::RenameProject { pid, name } => self.rename_project(&pid, &name),
+                Action::RemoveProject(pid) => self.remove_project(&pid),
             }
         } else if !close {
             self.dialog = Some(dlg);
